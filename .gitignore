@@ -1,0 +1,6 @@
+node_modules/
+.qa/
+.env
+.env.local
+.DS_Store
+coverage/
