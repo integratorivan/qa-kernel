@@ -137,6 +137,18 @@ describe("browser controller", () => {
     await failingController.close();
   }, 10_000);
 
+  test("aborts an in-flight action and allows Chromium cleanup", async () => {
+    const browser = await openCase();
+    const observation = await browser.snapshot("inspect");
+    const slow = observation.interactive.find((target) => target.name === "Slow check");
+    const abort = new AbortController();
+    const pending = browser.click(slow!.ref, "slow", abort.signal);
+    // This integration test must interrupt Chromium's real settle loop.
+    setTimeout(() => abort.abort(new Error("cancelled by test")), 100);
+    await expect(pending).rejects.toThrow("cancelled by test");
+    await browser.close();
+  }, 10_000);
+
   test("redacts a secret field from observations and persisted evidence", async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));
     const secret = "secret-sentinel@example.test";

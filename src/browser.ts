@@ -206,6 +206,7 @@ export class CaseBrowser {
       if (signal?.aborted) throw signal.reason ?? new Error("aborted");
       await operation();
     } catch (caught) {
+      if (signal?.aborted) throw caught;
       actionStatus = "failed";
       error = { code: "BROWSER_ACTION", message: caught instanceof Error ? caught.message : String(caught) };
     }

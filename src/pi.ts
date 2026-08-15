@@ -240,9 +240,14 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string }): Pr
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") chunks.push(event.assistantMessageEvent.delta);
     });
+    const abortSession = () => { void session.abort().catch(() => {}); };
+    input.signal.addEventListener("abort", abortSession, { once: true });
+    if (input.signal.aborted) abortSession();
+
     try {
       await session.prompt(input.prompt ?? JSON.stringify({ caseId: input.caseId, goal: input.goal, steps: input.steps, oracle: input.oracle, instruction: "Execute the frozen case. When finished, return only one JSON case result with evidence IDs from browser tool results." }));
     } finally {
+      input.signal.removeEventListener("abort", abortSession);
       unsubscribe();
       session.dispose();
     }
