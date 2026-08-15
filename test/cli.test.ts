@@ -35,6 +35,14 @@ test("validate accepts a safe approved pack", async () => {
   expect(await main(["validate", "--pack", packDirectory])).toBe(0);
 });
 
+
+test("run records a configuration error before launching Chromium", async () => {
+  const packDirectory = await writePack();
+  delete process.env.QA_PI_API_KEY;
+  const runDirectory = join(temporaryDirectory, "run");
+  expect(await main(["run", "--pack", packDirectory, "--out", runDirectory])).toBe(2);
+  expect(await readFile(join(runDirectory, "results.json"), "utf8")).toContain("\"status\": \"ERROR\"");
+});
 test("report renders persisted case results without a model", async () => {
   const runDirectory = await writePack();
   await writeFile(join(runDirectory, "results.json"), JSON.stringify({ status: "COMPLETED", results: [{ schemaVersion: 1, testCaseId: "B2B-001", executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Dashboard loaded", evidence: [{ stepId: "open-login", claim: "Dashboard visible", evidenceIds: ["ev-1"] }], reviewReason: null, error: null }] }));

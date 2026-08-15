@@ -74,6 +74,13 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   const controller = new BrowserController(new Set(pack.allowedOrigins));
   const results: CaseResult[] = [];
   let status: RunSummary["status"] = "COMPLETED";
+  if (!options.apiKey) {
+    status = "ERROR";
+    await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_PI_API_KEY is required for the pinned Pi model" });
+    const summary = await persistResults(options.outputDirectory, results, status);
+    return { results, summary };
+  }
+
   try {
     await controller.start();
     for (const loaded of pack.cases) {

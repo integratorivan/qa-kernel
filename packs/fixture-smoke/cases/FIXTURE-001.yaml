@@ -1,0 +1,28 @@
+schemaVersion: 1
+id: FIXTURE-001
+title: Test user signs in to the fixture cabinet
+goal: Verify a registered test user can access the read-only fixture cabinet
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the fixture sign-in screen
+  - id: fill-credentials
+    instruction: Fill the approved test credentials
+  - id: submit-login
+    instruction: Submit the sign-in form
+oracle:
+  source: product-requirement
+  expect:
+    - The authenticated cabinet is visible
+    - The interface displays the signed-in state
+    - The authentication request succeeds
+  reject:
+    - The sign-in form remains without an explanation
+    - An authentication error is displayed
+    - The cabinet renders an error or blank screen
+safety:
+  mutation: none

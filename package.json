@@ -8,6 +8,7 @@
   },
   "scripts": {
     "qa": "bun run src/cli.ts",
+    "fixture": "bun run fixtures/b2b-fixture.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
