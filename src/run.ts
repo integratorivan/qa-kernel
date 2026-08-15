@@ -4,7 +4,7 @@ import { appendNdjson, atomicJson, EvidenceStore, SecretRedactor } from "./artif
 import { BrowserController } from "./browser.js";
 import { loadPack, secretsForCase, type LoadedPack } from "./pack.js";
 import { executePiCase, repairPiResult } from "./pi.js";
-import type { ModelConfiguration } from "./model.js";
+import { openRouterRouting, type ModelConfiguration } from "./model.js";
 
 import { markdownReport, summarize, type RunSummary } from "./report.js";
 import { type CaseResult, SCHEMA_VERSION, SchemaError, validateResult } from "./schema.js";
@@ -79,6 +79,8 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
     schemaVersion: SCHEMA_VERSION,
     provider: options.modelConfiguration.provider,
     model: options.modelConfiguration.model,
+    openRouterRouting: openRouterRouting(options.modelConfiguration),
+
     targetOrigins: pack.allowedOrigins,
     startedAt: new Date().toISOString(),
     actionCounts: {} as Record<string, number>,

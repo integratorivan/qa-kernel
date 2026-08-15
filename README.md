@@ -29,7 +29,7 @@ export QA_MODEL_ID=claude-opus-4-8
 export QA_MODEL_API_KEY='...'
 ```
 
-The allowlist also permits direct Anthropic `anthropic/claude-opus-4-8` and OpenRouter `openrouter/anthropic/claude-opus-4.8`. Set both `QA_MODEL_PROVIDER` and `QA_MODEL_ID` to one of those exact pairs; arbitrary routing and model IDs are rejected. Never commit a real key.
+The allowlist also permits direct Anthropic `anthropic/claude-opus-4-8` and OpenRouter `openrouter/anthropic/claude-opus-4.8`. Set both `QA_MODEL_PROVIDER` and `QA_MODEL_ID` to one of those exact pairs; arbitrary routing and model IDs are rejected. OpenRouter requests pin the upstream to `z-ai` for GLM or `anthropic` for Opus, disable fallback providers, and require every requested parameter to be supported. Never commit a real key.
 
 ## Commands
 

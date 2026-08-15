@@ -10,6 +10,24 @@ export interface ModelConfiguration {
   model: string;
 }
 
+export interface OpenRouterRoutingPolicy {
+  order: string[];
+  allow_fallbacks: false;
+  require_parameters: true;
+}
+
+const OPENROUTER_ROUTING: Readonly<Record<string, OpenRouterRoutingPolicy>> = {
+  "z-ai/glm-5.2": { order: ["z-ai"], allow_fallbacks: false, require_parameters: true },
+  "anthropic/claude-opus-4.8": { order: ["anthropic"], allow_fallbacks: false, require_parameters: true },
+};
+
+export function openRouterRouting(configuration: ModelConfiguration): OpenRouterRoutingPolicy | null {
+  if (configuration.provider !== "openrouter") return null;
+  const policy = OPENROUTER_ROUTING[configuration.model];
+  if (!policy) throw new ModelConfigurationError(`missing OpenRouter routing policy for ${configuration.model}`);
+  return { ...policy, order: [...policy.order] };
+}
+
 export class ModelConfigurationError extends Error {
   constructor(message: string) {
     super(message);

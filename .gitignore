@@ -1,4 +1,7 @@
 node_modules/
+src/*.js
+test/*.js
+fixtures/*.js
 .qa/
 .env
 .env.local

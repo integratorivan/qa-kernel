@@ -57,5 +57,6 @@ test("persists a PASS only after the host validates real action evidence", async
   expect(output.summary.counts.PASS).toBe(1);
   expect(output.summary.exitCode).toBe(0);
   expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"verdict": "PASS"');
+  expect(await readFile(join(outputDirectory, "meta.json"), "utf8")).toContain('"openRouterRouting": {\n    "order": [\n      "z-ai"\n    ],\n    "allow_fallbacks": false,\n    "require_parameters": true');
   expect(await readFile(join(outputDirectory, "meta.json"), "utf8")).toContain('"RUN-001": 1');
 });

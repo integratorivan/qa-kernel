@@ -5,7 +5,7 @@ import { appendNdjson, atomicJson, EvidenceStore, SecretRedactor } from "./artif
 import { BrowserController } from "./browser.js";
 import { loadPack, type LoadedPack } from "./pack.js";
 import { executePiCase } from "./pi.js";
-import type { ModelConfiguration } from "./model.js";
+import { openRouterRouting, type ModelConfiguration } from "./model.js";
 
 import { SCHEMA_VERSION, type TestCase, validateCase } from "./schema.js";
 
@@ -94,7 +94,7 @@ export async function discover(options: DiscoverOptions): Promise<DiscoveryOutpu
       await Promise.all(parsed.drafts.map((draft) => Bun.write(join(options.draftOutputDirectory, `${draft.testCase.id}.yaml`), stringify(draft.testCase))));
       await Bun.write(join(options.outputDirectory, "product-map.yaml"), stringify({ productMap: parsed.productMap, uncoveredAreas: parsed.uncoveredAreas }));
       await atomicJson(join(options.outputDirectory, "result.json"), { schemaVersion: SCHEMA_VERSION, drafts: parsed.drafts.map((draft) => ({ id: draft.testCase.id, status: draft.status, evidenceIds: draft.evidenceIds })) });
-      await atomicJson(join(options.outputDirectory, "meta.json"), { schemaVersion: SCHEMA_VERSION, provider: options.modelConfiguration.provider, model: options.modelConfiguration.model, mission: options.mission, targetOrigin: new URL(targetUrl).origin, actionCount: output.actions, completedAt: new Date().toISOString() });
+      await atomicJson(join(options.outputDirectory, "meta.json"), { schemaVersion: SCHEMA_VERSION, provider: options.modelConfiguration.provider, model: options.modelConfiguration.model, openRouterRouting: openRouterRouting(options.modelConfiguration), mission: options.mission, targetOrigin: new URL(targetUrl).origin, actionCount: output.actions, completedAt: new Date().toISOString() });
       await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "discovery_completed", actionCount: output.actions, at: new Date().toISOString() });
       return parsed;
     } finally {

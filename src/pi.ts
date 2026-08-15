@@ -5,7 +5,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createAgentSession, createExtensionRuntime, defineTool, getLastAssistantUsage, ModelRuntime, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { CaseBrowser, Observation } from "./browser.js";
-import type { ModelConfiguration } from "./model.js";
+import { openRouterRouting, type ModelConfiguration } from "./model.js";
 
 
 const MAX_ACTIONS = 25;
@@ -138,14 +138,16 @@ function browserTool(input: PiCaseRuntimeInput, actionCounter: { value: number; 
   });
 }
 
-function configuredModel(configuration: ModelConfiguration) {
+export function modelForConfiguration(configuration: ModelConfiguration) {
   const model = models.getModel(configuration.provider, configuration.model);
   if (!model) throw new PiConfigurationError(`pinned model ${configuration.provider}/${configuration.model} is unavailable in Pi SDK`);
-  return model;
+  const routing = openRouterRouting(configuration);
+  if (!routing) return model;
+  return { ...model, compat: { ...model.compat, openRouterRouting: routing } };
 }
 
 export async function verifyPiIsolation(configuration: ModelConfiguration): Promise<string[]> {
-  const model = configuredModel(configuration);
+  const model = modelForConfiguration(configuration);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-check-"));
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
@@ -182,7 +184,7 @@ export async function verifyPiIsolation(configuration: ModelConfiguration): Prom
 
 export async function repairPiResult(configuration: ModelConfiguration, apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal): Promise<string> {
   if (!apiKey) throw new PiConfigurationError("QA_MODEL_API_KEY is required for the configured QA model");
-  const model = configuredModel(configuration);
+  const model = modelForConfiguration(configuration);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-repair-"));
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
@@ -223,7 +225,7 @@ export async function repairPiResult(configuration: ModelConfiguration, apiKey: 
 
 export async function executePiCase(input: PiCaseInput & { apiKey: string; modelConfiguration: ModelConfiguration }): Promise<PiCaseOutput> {
   if (!input.apiKey) throw new PiConfigurationError("QA_MODEL_API_KEY is required for the configured QA model");
-  const model = configuredModel(input.modelConfiguration);
+  const model = modelForConfiguration(input.modelConfiguration);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-"));
   const startedAt = Date.now();
   const sessionManager = SessionManager.inMemory(runtimeDirectory);
