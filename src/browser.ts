@@ -100,10 +100,13 @@ function isLongLived(entry: NetworkEntry): boolean {
   return /(?:long[-_]?poll|event|stream)/i.test(new URL(entry.request.url()).pathname);
 }
 
+export type Screenshotter = (page: Page) => Promise<Buffer>;
+
+
 export class BrowserController {
   #browser: Browser | null = null;
 
-  constructor(private readonly allowedOrigins: ReadonlySet<string>, private readonly headless = true) {}
+  constructor(private readonly allowedOrigins: ReadonlySet<string>, private readonly headless = true, private readonly screenshot: Screenshotter = (page) => page.screenshot({ type: "png" })) {}
 
   async start(): Promise<void> {
     if (this.#browser) return;
@@ -114,7 +117,7 @@ export class BrowserController {
     if (!this.#browser) throw new Error("Chromium has not been started");
     const context = await this.#browser.newContext();
     const page = await context.newPage();
-    return new CaseBrowser(context, page, this.allowedOrigins, evidence, caseId);
+    return new CaseBrowser(context, page, this.allowedOrigins, evidence, caseId, this.screenshot);
   }
 
   async close(): Promise<void> {
@@ -131,7 +134,7 @@ export class CaseBrowser {
   #snapshotOrdinal = 0;
   #actionOrdinal = 0;
 
-  constructor(private readonly context: BrowserContext, page: Page, private readonly allowedOrigins: ReadonlySet<string>, private readonly evidence: EvidenceStore, private readonly caseId: string) {
+  constructor(private readonly context: BrowserContext, page: Page, private readonly allowedOrigins: ReadonlySet<string>, private readonly evidence: EvidenceStore, private readonly caseId: string, private readonly screenshot: Screenshotter) {
     this.#page = page;
     context.on("request", (request) => this.#ledger.push({ request, startedAt: Date.now(), finishedAt: null, status: null, failure: null, eligible: isEligibleRequest(request, allowedOrigins) }));
     context.on("response", (response) => {
@@ -279,7 +282,7 @@ export class CaseBrowser {
       return original;
     }).catch(() => null)));
     try {
-      const content = await this.#page.screenshot({ type: "png" });
+      const content = await this.screenshot(this.#page);
       return await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "screenshot", url, extension: "png", content });
     } catch (caught) {
       warnings.push(`screenshot failed: ${caught instanceof Error ? caught.message : String(caught)}`);

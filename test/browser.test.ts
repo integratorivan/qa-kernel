@@ -11,11 +11,12 @@ let origin = "";
 let temporaryDirectory = "";
 
 const pageHtml = `<!doctype html>
-<html><body>
+<html><head><link rel="prefetch" href="/prefetch"></head><body>
   <label>Email <input id="email" type="email"></label>
   <button id="save" onclick="document.querySelector('#result').textContent = 'Saved'">Save profile</button>
   <button id="slow" onclick="fetch('/api/slow').then(() => document.querySelector('#result').textContent = 'Slow complete')">Slow check</button>
   <button id="poll" onclick="fetch('/api/long-poll')">Open long poll</button>
+  <button id="analytics" onclick="fetch('/analytics')">Send analytics</button>
   <div id="result"></div>
   <table><thead><tr><th>Product code <button id="header-search" class="icon">⌕</button></th></tr></thead><tbody>${Array.from({ length: 100 }, (_, index) => `<tr><td><button>row-${index}</button></td></tr>`).join("")}</tbody></table>
   <button id="below" style="margin-top: 1400px" onclick="document.querySelector('#result').textContent = 'Below clicked'">Below viewport</button>
@@ -38,6 +39,12 @@ beforeAll(async () => {
         setTimeout(() => response.resolve(new Response("ok")), 2_500);
         return response.promise;
       }
+      if (url.pathname === "/analytics" || url.pathname === "/prefetch") {
+        const response = Promise.withResolvers<Response>();
+        setTimeout(() => response.resolve(new Response("ok")), 2_500);
+        return response.promise;
+      }
+
       return new Response(pageHtml, { headers: { "content-type": "text/html; charset=utf-8" } });
     },
   });
@@ -105,8 +112,30 @@ describe("browser controller", () => {
     const pollResult = await browser.click(poll!.ref, "poll");
     expect(Date.now() - pollStartedAt).toBeLessThan(2_400);
     expect(pollResult.observationStatus).toBe("complete");
+    const analytics = pollResult.observation?.interactive.find((target) => target.name === "Send analytics");
+    const analyticsStartedAt = Date.now();
+    const analyticsResult = await browser.click(analytics!.ref, "analytics");
+    expect(Date.now() - analyticsStartedAt).toBeLessThan(2_400);
+    expect(analyticsResult.observationStatus).toBe("complete");
     await browser.close();
   }, 15_000);
+
+  test("preserves successful actions when screenshot capture fails", async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));
+    const failingController = new BrowserController(new Set([origin]), true, async () => {
+      throw new Error("intentional screenshot failure");
+    });
+    await failingController.start();
+    const browser = await failingController.createCase(new EvidenceStore(temporaryDirectory, new SecretRedactor([])), "B2B-001");
+    const opened = await browser.open(`${origin}/`, "open-page");
+    const save = opened.observation?.interactive.find((target) => target.name === "Save profile");
+    const clicked = await browser.click(save!.ref, "save");
+    expect(clicked.actionStatus).toBe("ok");
+    expect(clicked.observation?.visibleText).toContain("Saved");
+    expect(clicked.warnings.some((warning) => warning.includes("screenshot"))).toBe(true);
+    await browser.close();
+    await failingController.close();
+  }, 10_000);
 
   test("redacts a secret field from observations and persisted evidence", async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));
