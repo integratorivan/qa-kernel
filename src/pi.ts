@@ -1,15 +1,17 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createAgentSession, createExtensionRuntime, defineTool, getLastAssistantUsage, ModelRuntime, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { CaseBrowser, Observation } from "./browser.js";
+import type { ModelConfiguration } from "./model.js";
 
-export const PI_PROVIDER = "anthropic";
-export const PI_MODEL = "claude-opus-4-8";
+
 const MAX_ACTIONS = 25;
 const CASE_TIMEOUT_MS = 5 * 60_000;
+const models = builtinModels();
+
 
 export class PiConfigurationError extends Error {
   constructor(message: string) {
@@ -136,9 +138,14 @@ function browserTool(input: PiCaseRuntimeInput, actionCounter: { value: number; 
   });
 }
 
-export async function verifyPiIsolation(): Promise<string[]> {
-  const model = getModel(PI_PROVIDER, PI_MODEL);
-  if (!model) throw new PiConfigurationError(`pinned model ${PI_PROVIDER}/${PI_MODEL} is unavailable in Pi SDK`);
+function configuredModel(configuration: ModelConfiguration) {
+  const model = models.getModel(configuration.provider, configuration.model);
+  if (!model) throw new PiConfigurationError(`pinned model ${configuration.provider}/${configuration.model} is unavailable in Pi SDK`);
+  return model;
+}
+
+export async function verifyPiIsolation(configuration: ModelConfiguration): Promise<string[]> {
+  const model = configuredModel(configuration);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-check-"));
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
@@ -173,14 +180,13 @@ export async function verifyPiIsolation(): Promise<string[]> {
   }
 }
 
-export async function repairPiResult(apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal): Promise<string> {
-  if (!apiKey) throw new PiConfigurationError("QA_PI_API_KEY is required for the pinned Pi model");
-  const model = getModel(PI_PROVIDER, PI_MODEL);
-  if (!model) throw new PiConfigurationError(`pinned model ${PI_PROVIDER}/${PI_MODEL} is unavailable in Pi SDK`);
+export async function repairPiResult(configuration: ModelConfiguration, apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal): Promise<string> {
+  if (!apiKey) throw new PiConfigurationError("QA_MODEL_API_KEY is required for the configured QA model");
+  const model = configuredModel(configuration);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-repair-"));
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
-    await runtime.setRuntimeApiKey(PI_PROVIDER, apiKey);
+    await runtime.setRuntimeApiKey(configuration.provider, apiKey);
     const { session } = await createAgentSession({
       cwd: runtimeDirectory,
       agentDir: runtimeDirectory,
@@ -215,10 +221,9 @@ export async function repairPiResult(apiKey: string, invalidResult: string, vali
   }
 }
 
-export async function executePiCase(input: PiCaseInput & { apiKey: string }): Promise<PiCaseOutput> {
-  if (!input.apiKey) throw new PiConfigurationError("QA_PI_API_KEY is required for the pinned Pi model");
-  const model = getModel(PI_PROVIDER, PI_MODEL);
-  if (!model) throw new PiConfigurationError(`pinned model ${PI_PROVIDER}/${PI_MODEL} is unavailable in Pi SDK`);
+export async function executePiCase(input: PiCaseInput & { apiKey: string; modelConfiguration: ModelConfiguration }): Promise<PiCaseOutput> {
+  if (!input.apiKey) throw new PiConfigurationError("QA_MODEL_API_KEY is required for the configured QA model");
+  const model = configuredModel(input.modelConfiguration);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-"));
   const startedAt = Date.now();
   const sessionManager = SessionManager.inMemory(runtimeDirectory);
@@ -226,7 +231,7 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string }): Pr
   const actionCounter = { value: 0, lastObservation: null as Observation | null, repeated: 0 };
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
-    await runtime.setRuntimeApiKey(PI_PROVIDER, input.apiKey);
+    await runtime.setRuntimeApiKey(input.modelConfiguration.provider, input.apiKey);
     const fullInput: PiCaseRuntimeInput = { ...input, startedAt };
     const { session } = await createAgentSession({
       cwd: runtimeDirectory,

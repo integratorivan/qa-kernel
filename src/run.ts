@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { appendNdjson, atomicJson, EvidenceStore, SecretRedactor } from "./artifacts.js";
 import { BrowserController } from "./browser.js";
 import { loadPack, secretsForCase, type LoadedPack } from "./pack.js";
-import { executePiCase, PI_MODEL, PI_PROVIDER, repairPiResult } from "./pi.js";
+import { executePiCase, repairPiResult } from "./pi.js";
+import type { ModelConfiguration } from "./model.js";
+
 import { markdownReport, summarize, type RunSummary } from "./report.js";
 import { type CaseResult, SCHEMA_VERSION, SchemaError, validateResult } from "./schema.js";
 
@@ -11,6 +13,8 @@ export interface RunOptions {
   packDirectory: string;
   outputDirectory: string;
   apiKey: string;
+  modelConfiguration: ModelConfiguration;
+
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   caseExecutor?: typeof executePiCase;
@@ -73,8 +77,8 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   await copyApprovedCases(pack, options.outputDirectory);
   const metadata = {
     schemaVersion: SCHEMA_VERSION,
-    provider: PI_PROVIDER,
-    model: PI_MODEL,
+    provider: options.modelConfiguration.provider,
+    model: options.modelConfiguration.model,
     targetOrigins: pack.allowedOrigins,
     startedAt: new Date().toISOString(),
     actionCounts: {} as Record<string, number>,
@@ -87,7 +91,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   let status: RunSummary["status"] = "COMPLETED";
   if (!options.apiKey) {
     status = "ERROR";
-    await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_PI_API_KEY is required for the pinned Pi model" });
+    await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_MODEL_API_KEY is required for the configured QA model" });
     await persistMeta();
     const summary = await persistResults(options.outputDirectory, results, status);
     return { results, summary };
@@ -106,7 +110,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       const browser = await controller.createCase(evidence, loaded.testCase.id);
       let result: CaseResult;
       try {
-        const execution = await (options.caseExecutor ?? executePiCase)({ caseId: loaded.testCase.id, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey });
+        const execution = await (options.caseExecutor ?? executePiCase)({ caseId: loaded.testCase.id, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, modelConfiguration: options.modelConfiguration });
         metadata.actionCounts[loaded.testCase.id] = execution.actions;
         metadata.tokenUsage[loaded.testCase.id] = execution.usage;
 
@@ -114,7 +118,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           result = parseModelResult(execution.text);
           validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         } catch (error) {
-          const repaired = await repairPiResult(options.apiKey, execution.text, error instanceof Error ? error.message : String(error), options.signal);
+          const repaired = await repairPiResult(options.modelConfiguration, options.apiKey, execution.text, error instanceof Error ? error.message : String(error), options.signal);
           result = parseModelResult(repaired);
           validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         }

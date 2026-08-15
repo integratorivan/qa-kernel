@@ -5,6 +5,8 @@ import { appendNdjson, atomicJson, EvidenceStore, SecretRedactor } from "./artif
 import { BrowserController } from "./browser.js";
 import { loadPack, type LoadedPack } from "./pack.js";
 import { executePiCase } from "./pi.js";
+import type { ModelConfiguration } from "./model.js";
+
 import { SCHEMA_VERSION, type TestCase, validateCase } from "./schema.js";
 
 export interface DiscoverOptions {
@@ -13,6 +15,8 @@ export interface DiscoverOptions {
   draftOutputDirectory: string;
   mission: string;
   apiKey: string;
+  modelConfiguration: ModelConfiguration;
+
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }
@@ -84,13 +88,13 @@ export async function discover(options: DiscoverOptions): Promise<DiscoveryOutpu
         allowedSecretRefs: pack.pack.allowedSecretRefs,
         instruction: "Explore only areas directly reachable for this mission. Use browser.open first. Produce only JSON with productMap:string[], uncoveredAreas:string[], drafts: 2-3 objects {status:'ready'|'needsCapability', case:<semantic case>, evidenceIds:string[]}. Every draft needs current-case evidence IDs from the explore step. Do not invent unseen capability. A ready draft requires a successful key interaction; needsCapability requires an observed control the browser could not operate.",
       });
-      const output = await executePiCase({ caseId: "DISCOVERY", goal: options.mission, steps: [{ id: "explore", instruction: "Explore the mission-relevant product area" }], oracle: { source: "qa-heuristic", expect: ["Grounded draft cases"], reject: ["Unseen capability"] }, secretValues, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, prompt });
+      const output = await executePiCase({ caseId: "DISCOVERY", goal: options.mission, steps: [{ id: "explore", instruction: "Explore the mission-relevant product area" }], oracle: { source: "qa-heuristic", expect: ["Grounded draft cases"], reject: ["Unseen capability"] }, secretValues, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, modelConfiguration: options.modelConfiguration, prompt });
       const parsed = parseDiscovery(output.text, pack, evidence);
       await mkdir(options.draftOutputDirectory, { recursive: true });
       await Promise.all(parsed.drafts.map((draft) => Bun.write(join(options.draftOutputDirectory, `${draft.testCase.id}.yaml`), stringify(draft.testCase))));
       await Bun.write(join(options.outputDirectory, "product-map.yaml"), stringify({ productMap: parsed.productMap, uncoveredAreas: parsed.uncoveredAreas }));
       await atomicJson(join(options.outputDirectory, "result.json"), { schemaVersion: SCHEMA_VERSION, drafts: parsed.drafts.map((draft) => ({ id: draft.testCase.id, status: draft.status, evidenceIds: draft.evidenceIds })) });
-      await atomicJson(join(options.outputDirectory, "meta.json"), { schemaVersion: SCHEMA_VERSION, mission: options.mission, targetOrigin: new URL(targetUrl).origin, actionCount: output.actions, completedAt: new Date().toISOString() });
+      await atomicJson(join(options.outputDirectory, "meta.json"), { schemaVersion: SCHEMA_VERSION, provider: options.modelConfiguration.provider, model: options.modelConfiguration.model, mission: options.mission, targetOrigin: new URL(targetUrl).origin, actionCount: output.actions, completedAt: new Date().toISOString() });
       await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "discovery_completed", actionCount: output.actions, at: new Date().toISOString() });
       return parsed;
     } finally {

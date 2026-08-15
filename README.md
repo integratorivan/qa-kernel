@@ -7,9 +7,29 @@ Local, evidence-first AI QA CLI for non-production B2B environments. Playwright 
 - Bun `1.3.14`
 - Playwright Chromium: `bunx playwright install chromium`
 - A non-production target explicitly allowlisted by `QA_ALLOWED_ORIGINS`
-- A credential for the pinned `anthropic/claude-opus-4-8` Pi model in `QA_PI_API_KEY`
+- A `QA_MODEL_API_KEY` for one approved provider/model configuration
 
 Copy `.env.example` to `.env` and load it in your shell. Credentials are never passed to the model; the model can only name an allowlisted environment key in `browser.fill({ from })`.
+
+## Model configuration
+
+The default is OpenRouter GLM 5.2:
+
+```bash
+export QA_MODEL_PROVIDER=openrouter
+export QA_MODEL_ID=z-ai/glm-5.2
+export QA_MODEL_API_KEY='...'
+```
+
+For direct Anthropic:
+
+```bash
+export QA_MODEL_PROVIDER=anthropic
+export QA_MODEL_ID=claude-opus-4-8
+export QA_MODEL_API_KEY='...'
+```
+
+The allowlist also permits direct Anthropic `anthropic/claude-opus-4-8` and OpenRouter `openrouter/anthropic/claude-opus-4.8`. Set both `QA_MODEL_PROVIDER` and `QA_MODEL_ID` to one of those exact pairs; arbitrary routing and model IDs are rejected. Never commit a real key.
 
 ## Commands
 

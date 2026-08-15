@@ -5,6 +5,8 @@ import { discover } from "./discover.js";
 import { loadPack } from "./pack.js";
 import { markdownReport, summarize } from "./report.js";
 import { runPack } from "./run.js";
+import { resolveModelConfiguration } from "./model.js";
+
 import { parseYaml, SCHEMA_VERSION, validatePack, validateResult, type CaseResult } from "./schema.js";
 
 interface Arguments {
@@ -64,7 +66,8 @@ async function execute(command: Arguments): Promise<number> {
         if (signals === 1) abort.abort(new Error("SIGINT"));
         else process.exit(130);
       });
-      const output = await runPack({ packDirectory: requireOption(command.values, "pack"), outputDirectory: requireOption(command.values, "out"), apiKey: process.env.QA_PI_API_KEY ?? "", signal: abort.signal });
+      const modelConfiguration = resolveModelConfiguration();
+      const output = await runPack({ packDirectory: requireOption(command.values, "pack"), outputDirectory: requireOption(command.values, "out"), apiKey: process.env.QA_MODEL_API_KEY ?? "", modelConfiguration, signal: abort.signal });
       process.stdout.write(`${JSON.stringify(output.summary)}\n`);
       return output.summary.exitCode;
     }
@@ -76,7 +79,8 @@ async function execute(command: Arguments): Promise<number> {
       const environment = { ...process.env, [pack.baseUrlFrom]: targetUrl };
       const discoveryId = new Date().toISOString().replace(/[:.]/g, "-");
       const outputDirectory = join(".qa", "discoveries", discoveryId);
-      const output = await discover({ packDirectory, outputDirectory, draftOutputDirectory: draftDirectory, mission: requireOption(command.values, "mission"), apiKey: process.env.QA_PI_API_KEY ?? "", environment });
+      const modelConfiguration = resolveModelConfiguration();
+      const output = await discover({ packDirectory, outputDirectory, draftOutputDirectory: draftDirectory, mission: requireOption(command.values, "mission"), apiKey: process.env.QA_MODEL_API_KEY ?? "", modelConfiguration, environment });
       process.stdout.write(`${JSON.stringify({ schemaVersion: SCHEMA_VERSION, drafts: output.drafts.map((draft) => ({ id: draft.testCase.id, status: draft.status })) })}\n`);
       return 0;
     }

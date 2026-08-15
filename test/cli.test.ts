@@ -8,7 +8,8 @@ import { loadPack } from "../src/pack.js";
 
 
 let temporaryDirectory = "";
-const originalEnvironment = { TARGET_URL: process.env.TARGET_URL, QA_ALLOWED_ORIGINS: process.env.QA_ALLOWED_ORIGINS, QA_EMAIL: process.env.QA_EMAIL, QA_PASSWORD: process.env.QA_PASSWORD };
+
+const originalEnvironment = { TARGET_URL: process.env.TARGET_URL, QA_ALLOWED_ORIGINS: process.env.QA_ALLOWED_ORIGINS, QA_EMAIL: process.env.QA_EMAIL, QA_PASSWORD: process.env.QA_PASSWORD, QA_MODEL_API_KEY: process.env.QA_MODEL_API_KEY, QA_MODEL_ID: process.env.QA_MODEL_ID, QA_MODEL_PROVIDER: process.env.QA_MODEL_PROVIDER };
 
 afterEach(async () => {
   for (const [key, value] of Object.entries(originalEnvironment)) {
@@ -46,7 +47,7 @@ test("discovery can load a pack before any case is approved", async () => {
 
 test("run records a configuration error before launching Chromium", async () => {
   const packDirectory = await writePack();
-  delete process.env.QA_PI_API_KEY;
+  delete process.env.QA_MODEL_API_KEY;
   const runDirectory = join(temporaryDirectory, "run");
   expect(await main(["run", "--pack", packDirectory, "--out", runDirectory])).toBe(2);
   expect(await readFile(join(runDirectory, "results.json"), "utf8")).toContain("\"status\": \"ERROR\"");

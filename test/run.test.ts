@@ -39,6 +39,8 @@ test("persists a PASS only after the host validates real action evidence", async
     packDirectory,
     outputDirectory,
     apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+
     environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
     caseExecutor: async (input) => {
       const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
