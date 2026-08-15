@@ -99,7 +99,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           result = parseModelResult(execution.text);
           validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         } catch (error) {
-          const repaired = await repairPiResult(options.apiKey, execution.text, error instanceof Error ? error.message : String(error));
+          const repaired = await repairPiResult(options.apiKey, execution.text, error instanceof Error ? error.message : String(error), options.signal);
           result = parseModelResult(repaired);
           validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         }

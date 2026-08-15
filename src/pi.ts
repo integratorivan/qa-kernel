@@ -172,7 +172,7 @@ export async function verifyPiIsolation(): Promise<string[]> {
   }
 }
 
-export async function repairPiResult(apiKey: string, invalidResult: string, validationError: string): Promise<string> {
+export async function repairPiResult(apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal): Promise<string> {
   if (!apiKey) throw new PiConfigurationError("QA_PI_API_KEY is required for the pinned Pi model");
   const model = getModel(PI_PROVIDER, PI_MODEL);
   if (!model) throw new PiConfigurationError(`pinned model ${PI_PROVIDER}/${PI_MODEL} is unavailable in Pi SDK`);
@@ -197,9 +197,14 @@ export async function repairPiResult(apiKey: string, invalidResult: string, vali
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") chunks.push(event.assistantMessageEvent.delta);
     });
+    const abortSession = () => { void session.abort().catch(() => {}); };
+    signal?.addEventListener("abort", abortSession, { once: true });
+    if (signal?.aborted) abortSession();
+
     try {
       await session.prompt(JSON.stringify({ instruction: "Return corrected JSON only. Do not add claims or evidence IDs. You cannot use browser tools.", validationError, invalidResult }));
     } finally {
+      signal?.removeEventListener("abort", abortSession);
       unsubscribe();
       session.dispose();
     }
