@@ -107,4 +107,21 @@ describe("browser controller", () => {
     expect(pollResult.observationStatus).toBe("complete");
     await browser.close();
   }, 15_000);
+
+  test("redacts a secret field from observations and persisted evidence", async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));
+    const secret = "secret-sentinel@example.test";
+    const evidence = new EvidenceStore(temporaryDirectory, new SecretRedactor([secret]));
+    const browser = await controller.createCase(evidence, "B2B-001");
+    await browser.open(`${origin}/`, "open-page");
+    const observation = await browser.snapshot("inspect");
+    const email = observation.interactive.find((target) => target.name === "Email");
+    const filled = await browser.fillSecret(email!.ref, secret, "fill-email");
+    expect(filled.observation?.visibleText).not.toContain(secret);
+    expect(filled.observation?.aria).not.toContain(secret);
+    for (const item of evidence.all()) {
+      expect(await Bun.file(join(temporaryDirectory, item.file)).text()).not.toContain(secret);
+    }
+    await browser.close();
+  }, 10_000);
 });

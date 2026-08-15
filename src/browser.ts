@@ -127,6 +127,7 @@ export class CaseBrowser {
   readonly #page: Page;
   readonly #ledger: NetworkEntry[] = [];
   #targets = new Map<string, Locator>();
+  #secretTargets: Locator[] = [];
   #snapshotOrdinal = 0;
   #actionOrdinal = 0;
 
@@ -167,6 +168,12 @@ export class CaseBrowser {
     const target = this.#target(ref);
     return this.#act(stepId, signal, async () => { await target.fill(value); });
   }
+  async fillSecret(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
+    const target = this.#target(ref);
+    this.#secretTargets.push(target);
+    return this.#act(stepId, signal, async () => { await target.fill(value); });
+  }
+
 
   async press(ref: string, key: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
     const target = this.#target(ref);
@@ -252,23 +259,38 @@ export class CaseBrowser {
     const interactive = selected.map((candidate, index) => {
       const ref = `s${snapshotOrdinal}-e${index + 1}`;
       this.#targets.set(ref, this.#page.locator(TARGET_SELECTOR).nth(candidate.index));
-      return { ref, kind: candidate.kind, name: candidate.name, nameSource: candidate.nameSource, bounds: candidate.bounds, enabled: candidate.enabled };
+      return { ref, kind: candidate.kind, name: this.evidence.redactText(candidate.name), nameSource: candidate.nameSource, bounds: candidate.bounds, enabled: candidate.enabled };
     });
-    const visibleText = await this.#page.locator("body").innerText();
-    const snapshotContent = JSON.stringify({ url, visibleText, aria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length }, null, 2);
-    const snapshot = await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "snapshot", url, extension: "json", content: snapshotContent });
+    const visibleText = this.evidence.redactText(await this.#page.locator("body").innerText());
+    const safeUrl = this.evidence.redactText(url);
+    const safeAria = this.evidence.redactText(aria);
+    const snapshotContent = JSON.stringify({ url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length }, null, 2);
+    const snapshot = await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "snapshot", url: safeUrl, extension: "json", content: snapshotContent });
     const screenshotId = screenshot?.id ?? "";
     if (!screenshotId) warnings.push("screenshot capture failed");
-    return { observation: { snapshotId: snapshot.id, screenshotId, url, visibleText, aria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
+    return { observation: { snapshotId: snapshot.id, screenshotId, url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
   }
 
   async #captureScreenshot(stepId: string, phase: "before" | "after", url: string, warnings: string[]): Promise<Evidence | null> {
+    const restores = await Promise.all(this.#secretTargets.map(async (target) => target.evaluate((element) => {
+      if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) return null;
+      const original = element.value;
+      element.value = element instanceof HTMLInputElement && element.type === "email" ? "redacted@example.invalid" : "REDACTED";
+      return original;
+    }).catch(() => null)));
     try {
       const content = await this.#page.screenshot({ type: "png" });
       return await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "screenshot", url, extension: "png", content });
     } catch (caught) {
       warnings.push(`screenshot failed: ${caught instanceof Error ? caught.message : String(caught)}`);
       return null;
+    } finally {
+      await Promise.all(this.#secretTargets.map((target, index) => {
+        const original = restores[index];
+        return original === null ? undefined : target.evaluate((element, value) => {
+          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) element.value = value;
+        }, original).catch(() => undefined);
+      }));
     }
   }
 

@@ -58,6 +58,10 @@ export class EvidenceStore {
   readonly #byId = new Map<string, Evidence>();
 
   constructor(private readonly root: string, private readonly redact: SecretRedactor) {}
+  redactText(value: string): string {
+    return this.redact.redact(value);
+  }
+
 
   async record(input: Omit<Evidence, "id" | "createdAt" | "hash" | "file"> & { extension: string; content: string | Uint8Array }): Promise<Evidence> {
     const id = `ev-${randomUUID()}`;
