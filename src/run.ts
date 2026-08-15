@@ -13,6 +13,7 @@ export interface RunOptions {
   apiKey: string;
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  caseExecutor?: typeof executePiCase;
 }
 
 export interface RunOutput {
@@ -70,13 +71,24 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   const pack = await loadPack(options.packDirectory, environment);
   await mkdir(options.outputDirectory, { recursive: true });
   await copyApprovedCases(pack, options.outputDirectory);
-  await atomicJson(join(options.outputDirectory, "meta.json"), { schemaVersion: SCHEMA_VERSION, provider: PI_PROVIDER, model: PI_MODEL, targetOrigins: pack.allowedOrigins, startedAt: new Date().toISOString(), actionCounts: [] });
+  const metadata = {
+    schemaVersion: SCHEMA_VERSION,
+    provider: PI_PROVIDER,
+    model: PI_MODEL,
+    targetOrigins: pack.allowedOrigins,
+    startedAt: new Date().toISOString(),
+    actionCounts: {} as Record<string, number>,
+    tokenUsage: {} as Record<string, unknown | null>,
+  };
+  const persistMeta = async () => atomicJson(join(options.outputDirectory, "meta.json"), { ...metadata, updatedAt: new Date().toISOString() });
+  await persistMeta();
   const controller = new BrowserController(new Set(pack.allowedOrigins));
   const results: CaseResult[] = [];
   let status: RunSummary["status"] = "COMPLETED";
   if (!options.apiKey) {
     status = "ERROR";
     await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_PI_API_KEY is required for the pinned Pi model" });
+    await persistMeta();
     const summary = await persistResults(options.outputDirectory, results, status);
     return { results, summary };
   }
@@ -94,7 +106,10 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       const browser = await controller.createCase(evidence, loaded.testCase.id);
       let result: CaseResult;
       try {
-        const execution = await executePiCase({ caseId: loaded.testCase.id, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey });
+        const execution = await (options.caseExecutor ?? executePiCase)({ caseId: loaded.testCase.id, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey });
+        metadata.actionCounts[loaded.testCase.id] = execution.actions;
+        metadata.tokenUsage[loaded.testCase.id] = execution.usage;
+
         try {
           result = parseModelResult(execution.text);
           validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
@@ -115,6 +130,8 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         await browser.close();
       }
       results.push(result);
+      await persistMeta();
+
       await persistResults(options.outputDirectory, results, status);
     }
   } catch (error) {
@@ -126,6 +143,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   } finally {
     await controller.close();
   }
+  await persistMeta();
   const summary = await persistResults(options.outputDirectory, results, status);
   return { results, summary };
 }

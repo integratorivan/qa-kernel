@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { createAgentSession, createExtensionRuntime, defineTool, ModelRuntime, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, createExtensionRuntime, defineTool, getLastAssistantUsage, ModelRuntime, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { CaseBrowser, Observation } from "./browser.js";
 
@@ -34,6 +34,7 @@ export interface PiCaseOutput {
   text: string;
   activeTools: string[];
   actions: number;
+  usage: unknown | null;
 }
 
 interface PiCaseRuntimeInput extends PiCaseInput {
@@ -220,6 +221,8 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string }): Pr
   if (!model) throw new PiConfigurationError(`pinned model ${PI_PROVIDER}/${PI_MODEL} is unavailable in Pi SDK`);
   const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-"));
   const startedAt = Date.now();
+  const sessionManager = SessionManager.inMemory(runtimeDirectory);
+
   const actionCounter = { value: 0, lastObservation: null as Observation | null, repeated: 0 };
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
@@ -235,7 +238,7 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string }): Pr
       noTools: "all",
       tools: ["browser"],
       customTools: [browserTool(fullInput, actionCounter)],
-      sessionManager: SessionManager.inMemory(runtimeDirectory),
+      sessionManager,
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
     });
     const activeTools = session.getActiveToolNames();
@@ -249,14 +252,16 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string }): Pr
     input.signal.addEventListener("abort", abortSession, { once: true });
     if (input.signal.aborted) abortSession();
 
+    let usage: unknown | null = null;
     try {
       await session.prompt(input.prompt ?? JSON.stringify({ caseId: input.caseId, goal: input.goal, steps: input.steps, oracle: input.oracle, instruction: "Execute the frozen case. When finished, return only one JSON case result with evidence IDs from browser tool results." }));
+      usage = getLastAssistantUsage(sessionManager.getEntries()) ?? null;
     } finally {
       input.signal.removeEventListener("abort", abortSession);
       unsubscribe();
       session.dispose();
     }
-    return { text: chunks.join(""), activeTools, actions: actionCounter.value };
+    return { text: chunks.join(""), activeTools, actions: actionCounter.value, usage };
   } finally {
     await rm(runtimeDirectory, { recursive: true, force: true });
   }

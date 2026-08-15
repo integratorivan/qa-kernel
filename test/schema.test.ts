@@ -39,6 +39,8 @@ describe("results and evidence", () => {
     const evidence = new EvidenceStore(temporaryDirectory, new SecretRedactor(["secret-sentinel"]));
     const recorded = await evidence.record({ caseId: "B2B-001", stepId: "open-login", actionOrdinal: 1, phase: "before", kind: "snapshot", url: "https://example.test/?token=secret-sentinel", extension: "json", content: "secret-sentinel" });
     expect(await readFile(join(temporaryDirectory, recorded.file), "utf8")).toBe("[REDACTED]");
+    expect(() => evidence.validate({ caseId: "B2B-001", stepId: "open-login", evidenceIds: [recorded.id] })).not.toThrow();
+
     expect(() => evidence.validate({ caseId: "B2B-001", stepId: "submit-login", evidenceIds: [recorded.id] })).toThrow(EvidenceError);
   });
 
