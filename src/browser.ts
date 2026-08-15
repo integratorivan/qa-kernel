@@ -69,6 +69,12 @@ interface SnapshotCapture {
   evidence: Evidence[];
 }
 
+interface SnapshotTarget {
+  locator: Locator;
+  domVersion: number;
+}
+
+
 
 function pathWithoutQuery(url: string): string {
   const parsed = new URL(url);
@@ -116,6 +122,12 @@ export class BrowserController {
   async createCase(evidence: EvidenceStore, caseId: string): Promise<CaseBrowser> {
     if (!this.#browser) throw new Error("Chromium has not been started");
     const context = await this.#browser.newContext();
+    await context.addInitScript(() => {
+      let domVersion = 0;
+      new MutationObserver(() => {
+        document.documentElement.dataset.qaDomVersion = String(++domVersion);
+      }).observe(document, { childList: true, subtree: true, characterData: true });
+    });
     const page = await context.newPage();
     return new CaseBrowser(context, page, this.allowedOrigins, evidence, caseId, this.screenshot);
   }
@@ -129,7 +141,7 @@ export class BrowserController {
 export class CaseBrowser {
   readonly #page: Page;
   readonly #ledger: NetworkEntry[] = [];
-  #targets = new Map<string, Locator>();
+  #targets = new Map<string, SnapshotTarget>();
   #secretTargets: Locator[] = [];
   #snapshotOrdinal = 0;
   #actionOrdinal = 0;
@@ -163,24 +175,36 @@ export class CaseBrowser {
   }
 
   async click(ref: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = this.#target(ref);
-    return this.#act(stepId, signal, async () => { await target.click(); });
+    const target = await this.#target(ref);
+    return this.#act(stepId, signal, async () => {
+      await this.#assertTargetCurrent(target, ref);
+      await target.locator.click();
+    });
   }
 
   async fill(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = this.#target(ref);
-    return this.#act(stepId, signal, async () => { await target.fill(value); });
+    const target = await this.#target(ref);
+    return this.#act(stepId, signal, async () => {
+      await this.#assertTargetCurrent(target, ref);
+      await target.locator.fill(value);
+    });
   }
   async fillSecret(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = this.#target(ref);
-    this.#secretTargets.push(target);
-    return this.#act(stepId, signal, async () => { await target.fill(value); });
+    const target = await this.#target(ref);
+    this.#secretTargets.push(target.locator);
+    return this.#act(stepId, signal, async () => {
+      await this.#assertTargetCurrent(target, ref);
+      await target.locator.fill(value);
+    });
   }
 
 
   async press(ref: string, key: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = this.#target(ref);
-    return this.#act(stepId, signal, async () => { await target.press(key); });
+    const target = await this.#target(ref);
+    return this.#act(stepId, signal, async () => {
+      await this.#assertTargetCurrent(target, ref);
+      await target.locator.press(key);
+    });
   }
 
   async scroll(stepId: string, deltaY: number, signal?: AbortSignal): Promise<ActionResult> {
@@ -260,9 +284,10 @@ export class CaseBrowser {
     }
     this.#targets = new Map();
     const snapshotOrdinal = ++this.#snapshotOrdinal;
+    const domVersion = await this.#page.evaluate(() => Number(document.documentElement.dataset.qaDomVersion ?? "0"));
     const interactive = selected.map((candidate, index) => {
       const ref = `s${snapshotOrdinal}-e${index + 1}`;
-      this.#targets.set(ref, this.#page.locator(TARGET_SELECTOR).nth(candidate.index));
+      this.#targets.set(ref, { locator: this.#page.locator(TARGET_SELECTOR).nth(candidate.index), domVersion });
       return { ref, kind: candidate.kind, name: this.evidence.redactText(candidate.name), nameSource: candidate.nameSource, bounds: candidate.bounds, enabled: candidate.enabled };
     });
     const visibleText = this.evidence.redactText(await this.#page.locator("body").innerText());
@@ -298,10 +323,16 @@ export class CaseBrowser {
     }
   }
 
-  #target(ref: string): Locator {
+  async #target(ref: string): Promise<SnapshotTarget> {
     const target = this.#targets.get(ref);
     if (!target) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+    await this.#assertTargetCurrent(target, ref);
     return target;
+  }
+
+  async #assertTargetCurrent(target: SnapshotTarget, ref: string): Promise<void> {
+    const domVersion = await this.#page.evaluate(() => Number(document.documentElement.dataset.qaDomVersion ?? "0"));
+    if (target.domVersion !== domVersion) throw new Error(`stale target ref ${ref}; the DOM changed and requires a fresh snapshot`);
   }
 
   async #settle(watermark: number, actionEndedAt: number, signal?: AbortSignal): Promise<"complete" | "incomplete"> {

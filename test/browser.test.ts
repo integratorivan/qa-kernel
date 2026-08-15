@@ -17,6 +17,8 @@ const pageHtml = `<!doctype html>
   <button id="slow" onclick="fetch('/api/slow').then(() => document.querySelector('#result').textContent = 'Slow complete')">Slow check</button>
   <button id="poll" onclick="fetch('/api/long-poll')">Open long poll</button>
   <button id="analytics" onclick="fetch('/analytics')">Send analytics</button>
+  <button id="delayed-update" onclick="setTimeout(() => document.querySelector('#result').textContent = 'Delayed update', 4000)">Start delayed update</button>
+
   <div id="result"></div>
   <table><thead><tr><th>Product code <button id="header-search" class="icon">⌕</button></th></tr></thead><tbody>${Array.from({ length: 100 }, (_, index) => `<tr><td><button>row-${index}</button></td></tr>`).join("")}</tbody></table>
   <button id="below" style="margin-top: 1400px" onclick="document.querySelector('#result').textContent = 'Below clicked'">Below viewport</button>
@@ -148,6 +150,20 @@ describe("browser controller", () => {
     await expect(pending).rejects.toThrow("cancelled by test");
     await browser.close();
   }, 10_000);
+
+  test("rejects a ref after an asynchronous DOM update", async () => {
+    const browser = await openCase();
+    const observation = await browser.snapshot("inspect");
+    const save = observation.interactive.find((target) => target.name === "Save profile");
+    const delayed = observation.interactive.find((target) => target.name === "Start delayed update");
+    await browser.click(delayed!.ref, "delay");
+    // This integration test waits for the fixture's real asynchronous DOM mutation.
+    const gate = Promise.withResolvers<void>();
+    setTimeout(gate.resolve, 2_500);
+    await gate.promise;
+    await expect(browser.click(save!.ref, "save")).rejects.toThrow("stale");
+    await browser.close();
+  }, 12_000);
 
   test("redacts a secret field from observations and persisted evidence", async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));
