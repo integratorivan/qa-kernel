@@ -26,6 +26,8 @@ export interface PiCaseInput {
   secretValues: ReadonlyMap<string, string>;
   browser: CaseBrowser;
   signal: AbortSignal;
+  prompt?: string;
+
 }
 
 export interface PiCaseOutput {
@@ -170,6 +172,43 @@ export async function verifyPiIsolation(): Promise<string[]> {
   }
 }
 
+export async function repairPiResult(apiKey: string, invalidResult: string, validationError: string): Promise<string> {
+  if (!apiKey) throw new PiConfigurationError("QA_PI_API_KEY is required for the pinned Pi model");
+  const model = getModel(PI_PROVIDER, PI_MODEL);
+  if (!model) throw new PiConfigurationError(`pinned model ${PI_PROVIDER}/${PI_MODEL} is unavailable in Pi SDK`);
+  const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-repair-"));
+  try {
+    const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
+    await runtime.setRuntimeApiKey(PI_PROVIDER, apiKey);
+    const { session } = await createAgentSession({
+      cwd: runtimeDirectory,
+      agentDir: runtimeDirectory,
+      model,
+      thinkingLevel: "high",
+      modelRuntime: runtime,
+      resourceLoader: emptyResourceLoader(),
+      noTools: "all",
+      tools: [],
+      sessionManager: SessionManager.inMemory(runtimeDirectory),
+      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+    });
+    if (session.getActiveToolNames().length !== 0) throw new PiConfigurationError("repair session unexpectedly exposed tools");
+    const chunks: string[] = [];
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") chunks.push(event.assistantMessageEvent.delta);
+    });
+    try {
+      await session.prompt(JSON.stringify({ instruction: "Return corrected JSON only. Do not add claims or evidence IDs. You cannot use browser tools.", validationError, invalidResult }));
+    } finally {
+      unsubscribe();
+      session.dispose();
+    }
+    return chunks.join("");
+  } finally {
+    await rm(runtimeDirectory, { recursive: true, force: true });
+  }
+}
+
 export async function executePiCase(input: PiCaseInput & { apiKey: string }): Promise<PiCaseOutput> {
   if (!input.apiKey) throw new PiConfigurationError("QA_PI_API_KEY is required for the pinned Pi model");
   const model = getModel(PI_PROVIDER, PI_MODEL);
@@ -197,11 +236,12 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string }): Pr
     const activeTools = session.getActiveToolNames();
     if (activeTools.length !== 1 || activeTools[0] !== "browser") throw new PiConfigurationError(`isolated Pi session exposed unexpected tools: ${activeTools.join(", ")}`);
     const chunks: string[] = [];
+
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") chunks.push(event.assistantMessageEvent.delta);
     });
     try {
-      await session.prompt(JSON.stringify({ caseId: input.caseId, goal: input.goal, steps: input.steps, oracle: input.oracle, instruction: "Execute the frozen case. When finished, return only one JSON case result with evidence IDs from browser tool results." }));
+      await session.prompt(input.prompt ?? JSON.stringify({ caseId: input.caseId, goal: input.goal, steps: input.steps, oracle: input.oracle, instruction: "Execute the frozen case. When finished, return only one JSON case result with evidence IDs from browser tool results." }));
     } finally {
       unsubscribe();
       session.dispose();

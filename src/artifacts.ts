@@ -74,8 +74,8 @@ export class EvidenceStore {
     await mkdir(dirname(fullPath), { recursive: true });
     await writeFile(fullPath, bytes);
     const evidence: Evidence = { id, caseId: input.caseId, stepId: input.stepId, actionOrdinal: input.actionOrdinal, phase: input.phase, kind: input.kind, url: this.redact.redact(input.url), createdAt, hash, file };
-    this.#byId.set(id, evidence);
     await appendNdjson(join(this.root, "evidence.ndjson"), evidence);
+    if (evidence.kind === "network") await appendNdjson(join(this.root, "network.ndjson"), evidence);
     return evidence;
   }
 
