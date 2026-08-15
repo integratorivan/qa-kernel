@@ -15,6 +15,11 @@ export interface LoadedPack {
   allowedOrigins: string[];
 }
 
+
+export interface LoadPackOptions {
+  requireCases?: boolean;
+}
+
 export class PackError extends Error {
   constructor(message: string) {
     super(message);
@@ -22,7 +27,7 @@ export class PackError extends Error {
   }
 }
 
-export async function loadPack(directory: string, environment: NodeJS.ProcessEnv = process.env): Promise<LoadedPack> {
+export async function loadPack(directory: string, environment: NodeJS.ProcessEnv = process.env, options: LoadPackOptions = {}): Promise<LoadedPack> {
   let pack: Pack;
   try {
     pack = validatePack(parseYaml(await readFile(join(directory, "pack.yaml"), "utf8"), "pack.yaml"));
@@ -34,9 +39,10 @@ export async function loadPack(directory: string, environment: NodeJS.ProcessEnv
   try {
     files = (await readdir(caseDirectory)).filter((file) => file.endsWith(".yaml")).sort();
   } catch (error) {
-    throw new PackError(`cannot read approved cases: ${error instanceof Error ? error.message : String(error)}`);
+    if (options.requireCases === false && error && typeof error === "object" && "code" in error && error.code === "ENOENT") files = [];
+    else throw new PackError(`cannot read approved cases: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (files.length === 0) throw new PackError("pack has no approved YAML cases in cases/");
+  if (options.requireCases !== false && files.length === 0) throw new PackError("pack has no approved YAML cases in cases/");
   const cases: LoadedCase[] = [];
   for (const file of files) {
     const source = await readFile(join(caseDirectory, file), "utf8");

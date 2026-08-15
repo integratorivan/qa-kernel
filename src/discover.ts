@@ -67,7 +67,7 @@ function parseDiscovery(text: string, pack: LoadedPack, evidence: EvidenceStore)
 
 export async function discover(options: DiscoverOptions): Promise<DiscoveryOutput> {
   const environment = options.environment ?? process.env;
-  const pack = await loadPack(options.packDirectory, environment);
+  const pack = await loadPack(options.packDirectory, environment, { requireCases: false });
   const targetUrl = environment[pack.pack.baseUrlFrom];
   if (!targetUrl) throw new Error(`missing ${pack.pack.baseUrlFrom}`);
   await mkdir(options.outputDirectory, { recursive: true });

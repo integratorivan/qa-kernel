@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { main } from "../src/cli.js";
+import { loadPack } from "../src/pack.js";
+
 
 let temporaryDirectory = "";
 const originalEnvironment = { TARGET_URL: process.env.TARGET_URL, QA_ALLOWED_ORIGINS: process.env.QA_ALLOWED_ORIGINS, QA_EMAIL: process.env.QA_EMAIL, QA_PASSWORD: process.env.QA_PASSWORD };
@@ -33,6 +35,12 @@ async function writePack() {
 test("validate accepts a safe approved pack", async () => {
   const packDirectory = await writePack();
   expect(await main(["validate", "--pack", packDirectory])).toBe(0);
+});
+
+test("discovery can load a pack before any case is approved", async () => {
+  const packDirectory = await writePack();
+  await rm(join(packDirectory, "cases"), { recursive: true, force: true });
+  expect((await loadPack(packDirectory, process.env, { requireCases: false })).cases).toEqual([]);
 });
 
 
