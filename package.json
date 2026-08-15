@@ -1,0 +1,21 @@
+{
+  "name": "qa-kernel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qa": "./src/cli.ts"
+  },
+  "scripts": {
+    "qa": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": "1.3.14"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.4",
+    "typescript": "5.9.3"
+  }
+}
