@@ -24,6 +24,7 @@ export interface RunOptions {
   browserPhaseTimeoutMs?: number;
   abortGraceMs?: number;
   repairTimeoutMs?: number;
+  browserLaunchTimeoutMs?: number;
 }
 
 export interface RunOutput {
@@ -112,7 +113,6 @@ async function persistResults(outputDirectory: string, results: readonly CaseRes
 async function copyApprovedCases(pack: LoadedPack, outputDirectory: string): Promise<void> {
   const destination = join(outputDirectory, "cases");
   await mkdir(destination, { recursive: true });
-  await Promise.all(pack.cases.map((item) => copyFile(join(pack.directory, "cases", item.file), join(destination, item.file))));
 }
 
 export async function runPack(options: RunOptions): Promise<RunOutput> {
@@ -151,7 +151,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   }
 
   try {
-    await controller.start();
+    await executeWithDeadline(async () => await controller.start(), undefined, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
     metadata.versions.chromium = controller.version();
     for (let caseIndex = 0; caseIndex < pack.cases.length; caseIndex += 1) {
       const loaded = pack.cases[caseIndex]!;
@@ -162,7 +162,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       if (restartBeforeNextCase) {
         try {
           await controller.close();
-          await controller.start();
+          await executeWithDeadline(async () => await controller.start(), undefined, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
           metadata.versions.chromium = controller.version();
           restartBeforeNextCase = false;
           await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "browser_restarted", at: new Date().toISOString() });
