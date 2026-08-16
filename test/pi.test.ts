@@ -74,6 +74,21 @@ test("hard case timeout aborts inference and runs one tool-free finalization tur
   expect(activeTools).toEqual([[]]);
 });
 
+test("escapes an abort-ignoring initial prompt before finalization", async () => {
+  const prompts: string[] = [];
+  const session = {
+    prompt: async (text: string) => {
+      prompts.push(text);
+      if (prompts.length === 1) await new Promise<never>(() => {});
+    },
+    abort: async () => {},
+    setActiveToolsByName: () => {},
+  };
+
+  await expect(promptWithFinalization(session, "execute", "finalize", () => {}, 5, 100, 5)).resolves.toBe(true);
+  expect(prompts).toEqual(["execute", "finalize"]);
+});
+
 test("uses the session-owned final assistant text with deltas only as fallback", () => {
   expect(finalAssistantText({ getLastAssistantText: () => '{"verdict":"PASS"}' }, ["partial"])).toBe('{"verdict":"PASS"}');
   expect(finalAssistantText({ getLastAssistantText: () => undefined }, ["fall", "back"])).toBe("fallback");

@@ -90,37 +90,38 @@ export function finalAssistantText(session: AssistantTextSession, deltas: readon
 
 export { extractJsonText } from "./json-text.js";
 
-export async function promptWithFinalization(session: PromptSession, initialPrompt: string, finalPrompt: string, onCaseTimeout: () => void, caseTimeoutMs = CASE_TIMEOUT_MS, finalizationTimeoutMs = FINALIZATION_TIMEOUT_MS): Promise<boolean> {
-  let caseTimedOut = false;
-  const caseTimer = setTimeout(() => {
-    caseTimedOut = true;
-    void session.abort().catch(() => {});
-  }, caseTimeoutMs);
-  try {
-    await session.prompt(initialPrompt);
-  } catch (error) {
-    if (!caseTimedOut) throw error;
-  } finally {
-    clearTimeout(caseTimer);
-  }
-  if (!caseTimedOut) return false;
-
-  await session.abort();
+export async function promptWithFinalization(session: PromptSession, initialPrompt: string, finalPrompt: string, onCaseTimeout: () => void, caseTimeoutMs = CASE_TIMEOUT_MS, finalizationTimeoutMs = FINALIZATION_TIMEOUT_MS, abortGraceMs = 5_000): Promise<boolean> {
+  const promptBounded = async (prompt: string, timeoutMs: number, timeoutCode: string) => {
+    let timer: Parameters<typeof clearTimeout>[0];
+    let graceTimer: Parameters<typeof clearTimeout>[0];
+    let timedOut = false;
+    let rejectEscape: ((reason: unknown) => void) | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      rejectEscape = reject;
+      timer = setTimeout(() => {
+        timedOut = true;
+        void session.abort().catch(() => {});
+        graceTimer = setTimeout(() => reject(new Error(timeoutCode)), abortGraceMs);
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([session.prompt(prompt), timeout]);
+      if (timedOut) throw new Error(timeoutCode);
+      return false;
+    } finally {
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      rejectEscape = undefined;
+    }
+  };
+  const timedOut = await promptBounded(initialPrompt, caseTimeoutMs, "CASE_PHASE_TIMEOUT").catch((error) => {
+    if (error instanceof Error && error.message === "CASE_PHASE_TIMEOUT") return true;
+    throw error;
+  });
+  if (!timedOut) return false;
   onCaseTimeout();
   session.setActiveToolsByName([]);
-  let finalizationTimedOut = false;
-  const finalizationTimer = setTimeout(() => {
-    finalizationTimedOut = true;
-    void session.abort().catch(() => {});
-  }, finalizationTimeoutMs);
-  try {
-    await session.prompt(finalPrompt);
-  } catch (error) {
-    if (!finalizationTimedOut) throw error;
-  } finally {
-    clearTimeout(finalizationTimer);
-  }
-  if (finalizationTimedOut) throw new Error("case finalization time limit exceeded");
+  await promptBounded(finalPrompt, finalizationTimeoutMs, "FINALIZATION_TIMEOUT");
   return true;
 }
 
