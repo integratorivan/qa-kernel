@@ -90,7 +90,7 @@ export function finalAssistantText(session: AssistantTextSession, deltas: readon
 
 export { extractJsonText } from "./json-text.js";
 
-export async function promptWithFinalization(session: PromptSession, initialPrompt: string, finalPrompt: string, onCaseTimeout: () => void, caseTimeoutMs = CASE_TIMEOUT_MS, finalizationTimeoutMs = FINALIZATION_TIMEOUT_MS, abortGraceMs = 5_000): Promise<boolean> {
+export async function promptWithFinalization(session: PromptSession, initialPrompt: string, finalPrompt: string | (() => string), onCaseTimeout: () => void, caseTimeoutMs = CASE_TIMEOUT_MS, finalizationTimeoutMs = FINALIZATION_TIMEOUT_MS, abortGraceMs = 5_000): Promise<boolean> {
   const promptBounded = async (prompt: string, timeoutMs: number, timeoutCode: string) => {
     let timer: Parameters<typeof clearTimeout>[0];
     let graceTimer: Parameters<typeof clearTimeout>[0];
@@ -121,7 +121,7 @@ export async function promptWithFinalization(session: PromptSession, initialProm
   if (!timedOut) return false;
   onCaseTimeout();
   session.setActiveToolsByName([]);
-  await promptBounded(finalPrompt, finalizationTimeoutMs, "FINALIZATION_TIMEOUT");
+  await promptBounded(typeof finalPrompt === "function" ? finalPrompt() : finalPrompt, finalizationTimeoutMs, "FINALIZATION_TIMEOUT");
   return true;
 }
 
@@ -440,7 +440,7 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string; model
       await promptWithFinalization(
         session,
         initialPrompt,
-        finalPrompt(),
+        finalPrompt,
         () => {
           actionGuard.terminate("time_limit");
           chunks.length = 0;
