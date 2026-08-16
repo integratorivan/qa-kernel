@@ -113,6 +113,7 @@ async function persistResults(outputDirectory: string, results: readonly CaseRes
 async function copyApprovedCases(pack: LoadedPack, outputDirectory: string): Promise<void> {
   const destination = join(outputDirectory, "cases");
   await mkdir(destination, { recursive: true });
+  await Promise.all(pack.cases.map((item) => copyFile(join(pack.directory, "cases", item.file), join(destination, item.file))));
 }
 
 export async function runPack(options: RunOptions): Promise<RunOutput> {
