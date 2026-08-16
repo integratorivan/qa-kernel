@@ -52,7 +52,7 @@ export class BrowserActionGuard {
     if (this.#terminalReason) return this.#terminalReason;
     if (observation) {
       const interactive = observation.interactive.map((target) => [target.kind, target.name, target.nameSource, target.enabled, target.bounds]);
-      const fingerprint = JSON.stringify([observation.url, observation.visibleText, interactive, networkProgress]);
+      const fingerprint = JSON.stringify([observation.url, observation.visibleText, interactive, observation.scroll, networkProgress]);
       this.#identicalObservations = fingerprint === this.#lastFingerprint ? this.#identicalObservations + 1 : 1;
       this.#lastFingerprint = fingerprint;
       if (this.#identicalObservations >= 3) return this.#setTerminal("no_progress");

@@ -11,6 +11,7 @@ const observation = {
   interactive: [{ ref: "s1-e1", kind: "button" as const, name: "Open", nameSource: "aria" as const, bounds: { x: 0, y: 0, width: 10, height: 10 }, enabled: true }],
   interactiveTruncated: false,
   omittedCount: 0,
+  scroll: { scope: "page" as const, x: 0, y: 0, maxX: 0, maxY: 1_000 },
 };
 
 test("Pi SDK exposes only the browser custom tool for the default GLM configuration", async () => {
@@ -30,6 +31,14 @@ test("the third identical observation returns a finalization gate", () => {
   expect(guard.start(100)).toBeNull();
   expect(guard.observe({ ...observation, snapshotId: "snapshot-3", interactive: [{ ...observation.interactive[0]!, ref: "s3-e1" }] }, "[]")).toBe("no_progress");
   expect(guard.actions).toBe(3);
+});
+
+test("scroll movement resets the no-progress counter", () => {
+  const guard = new BrowserActionGuard(0, { maxActions: 25, timeoutMs: 1_000 });
+  for (const y of [0, 300, 600]) {
+    expect(guard.start(100)).toBeNull();
+    expect(guard.observe({ ...observation, scroll: { ...observation.scroll, y } }, "[]")).toBeNull();
+  }
 });
 
 test("network changes reset no-progress and the last allowed action returns control", () => {

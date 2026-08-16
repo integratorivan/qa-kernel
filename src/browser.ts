@@ -19,6 +19,14 @@ export interface InteractiveTarget {
   bounds: { x: number; y: number; width: number; height: number };
   enabled: boolean;
 }
+export interface ScrollState {
+  scope: "page" | "container";
+  x: number;
+  y: number;
+  maxX: number;
+  maxY: number;
+}
+
 
 export interface Observation {
   snapshotId: string;
@@ -29,6 +37,7 @@ export interface Observation {
   interactive: InteractiveTarget[];
   interactiveTruncated: boolean;
   omittedCount: number;
+  scroll: ScrollState;
 }
 
 export interface ActionResult {
@@ -347,11 +356,12 @@ export class CaseBrowser {
     const visibleText = this.evidence.redactText(await this.#page.locator("body").innerText());
     const safeUrl = this.evidence.redactText(url);
     const safeAria = this.evidence.redactText(aria);
-    const snapshotContent = JSON.stringify({ url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length }, null, 2);
+    const scroll = await this.#page.evaluate(() => ({ scope: "page" as const, x: window.scrollX, y: window.scrollY, maxX: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), maxY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) }));
+    const snapshotContent = JSON.stringify({ url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, scroll }, null, 2);
     const snapshot = await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "snapshot", url: safeUrl, extension: "json", content: snapshotContent });
     const screenshotId = screenshot?.id ?? "";
     if (!screenshotId) warnings.push("screenshot capture failed");
-    return { observation: { snapshotId: snapshot.id, screenshotId, url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
+    return { observation: { snapshotId: snapshot.id, screenshotId, url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, scroll }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
   }
 
   async #captureScreenshot(stepId: string, phase: "before" | "after", url: string, warnings: string[]): Promise<Evidence | null> {
