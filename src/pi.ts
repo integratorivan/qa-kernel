@@ -145,6 +145,7 @@ export interface PiCaseInput {
   targetUrl?: string;
   prompt?: string;
   onAccess?: AccessSink;
+  evidenceManifest?: () => Record<string, string[]>;
 
 }
 
@@ -334,13 +335,13 @@ export async function verifyPiIsolation(configuration: ModelConfiguration): Prom
     await rm(runtimeDirectory, { recursive: true, force: true });
   }
 }
-
-export async function repairPiResult(configuration: ModelConfiguration, apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal, resultContract: unknown = RESULT_JSON_SCHEMA): Promise<string> {
+export async function repairPiResult(configuration: ModelConfiguration, apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal, resultContract: unknown = RESULT_JSON_SCHEMA, evidenceManifest: Record<string, string[]> = {}): Promise<string> {
   const schema = (resultContract && typeof resultContract === "object" ? resultContract : RESULT_JSON_SCHEMA) as Record<string, unknown>;
   const userContent = JSON.stringify({
-    instruction: "Return corrected JSON only. Match the JSON schema exactly. Do not invent evidence IDs. You cannot use browser tools.",
+    instruction: "Return corrected JSON only. Match the JSON schema exactly. Do not invent evidence IDs. You cannot use browser tools. Each claim may cite only IDs listed under its own stepId.",
     validationError,
     invalidResult,
+    evidenceManifest,
     resultContract: schema,
   });
   try {
@@ -434,11 +435,12 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string; model
     let usage: unknown | null = null;
     let text = "";
     try {
-      const initialPrompt = input.prompt ?? JSON.stringify({ caseId: input.caseId, targetUrl: input.targetUrl, goal: input.goal, steps: input.steps, oracle: input.oracle, approvedSecretBindings: input.secretBindings ?? Object.fromEntries([...input.secretValues.keys()].map((ref) => [ref, ref])), resultContract: RESULT_JSON_SCHEMA, instruction: "Execute the frozen case. Open targetUrl first. Use each frozen step id for its browser actions. For approved credentials, call browser.fill with from set to the ref named by approvedSecretBindings; never guess, swap, or pass credential values. Follow the frozen steps in order and interact with visible controls instead of inventing routes. When finished, return only one JSON object using exactly the resultContract fields and existing evidence IDs. BLOCKED requires blockedBy. INCONCLUSIVE requires reviewReason. All other verdicts require blockedBy:null and reviewReason:null." });
+      const initialPrompt = input.prompt ?? JSON.stringify({ caseId: input.caseId, targetUrl: input.targetUrl, goal: input.goal, steps: input.steps, oracle: input.oracle, approvedSecretBindings: input.secretBindings ?? Object.fromEntries([...input.secretValues.keys()].map((ref) => [ref, ref])), resultContract: RESULT_JSON_SCHEMA, instruction: "Execute the frozen case. Open targetUrl first. Use each frozen step id for its browser actions. Each claim may cite only evidence IDs captured with the same stepId. For approved credentials, call browser.fill with from set to the ref named by approvedSecretBindings; never guess, swap, or pass credential values. Follow the frozen steps in order and interact with visible controls instead of inventing routes. When finished, return only one JSON object using exactly the resultContract fields." });
+      const finalPrompt = () => JSON.stringify({ caseId: input.caseId, resultContract: RESULT_JSON_SCHEMA, evidenceManifest: input.evidenceManifest?.() ?? {}, instruction: "The five-minute browser phase ended. Browser tools are disabled. Return only a valid BLOCKED or INCONCLUSIVE JSON object using exactly the resultContract fields and only evidence IDs listed for the matching claim stepId. Do not invent evidence IDs." });
       await promptWithFinalization(
         session,
         initialPrompt,
-        JSON.stringify({ caseId: input.caseId, resultContract: RESULT_JSON_SCHEMA, instruction: "The five-minute browser phase ended. Browser tools are disabled. Return only a valid BLOCKED or INCONCLUSIVE JSON object using exactly the resultContract fields and evidence IDs already collected. Do not invent evidence IDs." }),
+        finalPrompt(),
         () => {
           actionGuard.terminate("time_limit");
           chunks.length = 0;

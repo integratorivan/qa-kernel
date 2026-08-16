@@ -197,6 +197,10 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         }
         const caseBrowser = browser;
         if (!caseBrowser) throw new Error(`case ${loaded.testCase.id} has no browser`);
+        const evidenceManifest = () => evidence.all().reduce<Record<string, string[]>>((byStep, item) => {
+          (byStep[item.stepId] ??= []).push(item.id);
+          return byStep;
+        }, {});
         const execution = await executeWithDeadline(
           (signal) => (options.caseExecutor ?? executePiCase)({
             caseId: loaded.testCase.id,
@@ -211,6 +215,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
             apiKey: options.apiKey,
             modelConfiguration: options.modelConfiguration,
             onAccess: async (event) => appendNdjson(join(options.outputDirectory, "access.ndjson"), event),
+            evidenceManifest,
           }),
           options.signal,
           options.browserPhaseTimeoutMs ?? 5 * 60_000,
@@ -225,7 +230,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         } catch (error) {
           const repaired = await executeWithDeadline(
-            (signal) => (options.resultRepairer ?? repairPiResult)(options.modelConfiguration, options.apiKey, redactor.redact(execution.text), error instanceof Error ? error.message : String(error), signal),
+            (signal) => (options.resultRepairer ?? repairPiResult)(options.modelConfiguration, options.apiKey, redactor.redact(execution.text), error instanceof Error ? error.message : String(error), signal, undefined, evidenceManifest()),
             options.signal,
             options.repairTimeoutMs ?? 30_000,
             "RESULT_REPAIR_TIMEOUT",
