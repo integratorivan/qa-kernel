@@ -455,3 +455,27 @@ test("escapes a hung browser phase after the host deadline and continues", async
   expect(output.results[0]?.error?.code).toBe("CASE_PHASE_TIMEOUT");
   expect(output.results[1]?.verdict).toBe("PASS");
 }, 30_000);
+
+test("rejects a repair that returns after its host deadline", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    repairTimeoutMs: 10,
+    abortGraceMs: 100,
+    caseExecutor: async (input) => {
+      await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return { text: "not-json", activeTools: ["browser"], actions: 1, usage: null } as never;
+    },
+    resultRepairer: async () => {
+      await Bun.sleep(30);
+      return "{}";
+    },
+  });
+
+  expect(output.results[0]?.error?.code).toBe("RESULT_REPAIR_TIMEOUT");
+}, 30_000);

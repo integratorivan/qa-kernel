@@ -37,7 +37,7 @@ class CaseDeadlineError extends Error {
   }
 }
 
-async function executeWithDeadline<T>(execute: (signal: AbortSignal) => Promise<T>, externalSignal: AbortSignal | undefined, browserPhaseTimeoutMs: number, abortGraceMs: number): Promise<T> {
+async function executeWithDeadline<T>(execute: (signal: AbortSignal) => Promise<T>, externalSignal: AbortSignal | undefined, timeoutMs: number, timeoutCode: string, abortGraceMs: number): Promise<T> {
   const controller = new AbortController();
   let phaseTimer: Parameters<typeof clearTimeout>[0];
   let graceTimer: Parameters<typeof clearTimeout>[0];
@@ -50,15 +50,17 @@ async function executeWithDeadline<T>(execute: (signal: AbortSignal) => Promise<
   const onExternalAbort = () => abort(externalSignal?.reason ?? new Error("case cancelled"));
   externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   if (externalSignal?.aborted) onExternalAbort();
-  const deadline = new CaseDeadlineError("CASE_PHASE_TIMEOUT");
-  phaseTimer = setTimeout(() => abort(deadline), browserPhaseTimeoutMs);
+  const deadline = new CaseDeadlineError(timeoutCode);
+  phaseTimer = setTimeout(() => abort(deadline), timeoutMs);
   const work = execute(controller.signal);
   void work.catch(() => {});
   const escape = new Promise<never>((_, reject) => {
     rejectEscape = reject;
   });
   try {
-    return await Promise.race([work, escape]);
+    const result = await Promise.race([work, escape]);
+    if (controller.signal.aborted) throw controller.signal.reason;
+    return result;
   } finally {
     clearTimeout(phaseTimer);
     clearTimeout(graceTimer);
@@ -211,6 +213,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           }),
           options.signal,
           options.browserPhaseTimeoutMs ?? 5 * 60_000,
+          "CASE_PHASE_TIMEOUT",
           options.abortGraceMs ?? 5_000,
         );
         metadata.actionCounts[loaded.testCase.id] = execution.actions;
@@ -224,6 +227,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
             (signal) => (options.resultRepairer ?? repairPiResult)(options.modelConfiguration, options.apiKey, redactor.redact(execution.text), error instanceof Error ? error.message : String(error), signal),
             options.signal,
             options.repairTimeoutMs ?? 30_000,
+            "RESULT_REPAIR_TIMEOUT",
             options.abortGraceMs ?? 5_000,
           );
           result = parseModelResult(redactor.redact(repaired));
