@@ -152,7 +152,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   }
 
   try {
-    await executeWithDeadline(async () => await controller.start(), undefined, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
+    await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
     metadata.versions.chromium = controller.version();
     for (let caseIndex = 0; caseIndex < pack.cases.length; caseIndex += 1) {
       const loaded = pack.cases[caseIndex]!;
@@ -163,7 +163,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       if (restartBeforeNextCase) {
         try {
           await controller.close();
-          await executeWithDeadline(async () => await controller.start(), undefined, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
+          await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
           metadata.versions.chromium = controller.version();
           restartBeforeNextCase = false;
           await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "browser_restarted", at: new Date().toISOString() });
