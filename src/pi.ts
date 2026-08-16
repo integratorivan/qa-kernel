@@ -10,7 +10,125 @@ import { openRouterRouting, type ModelConfiguration } from "./model.js";
 
 const MAX_ACTIONS = 25;
 const CASE_TIMEOUT_MS = 5 * 60_000;
+const FINALIZATION_TIMEOUT_MS = 30_000;
 const models = builtinModels();
+const RESULT_CONTRACT = {
+  schemaVersion: 1,
+  testCaseId: "frozen case id",
+  executionStatus: "completed",
+  verdict: "PASS | FAIL | BLOCKED | INCONCLUSIVE",
+  blockedBy: "capability | credentials | environment | safety | product | null",
+  actual: "string",
+  evidence: [{ stepId: "existing frozen step id", claim: "string", evidenceIds: ["existing evidence id"] }],
+  reviewReason: "string only for INCONCLUSIVE, otherwise null",
+  error: null,
+} as const;
+
+export type BrowserLimitReason = "action_limit" | "time_limit" | "no_progress";
+
+interface BrowserActionGuardOptions {
+  maxActions?: number;
+  timeoutMs?: number;
+}
+
+export class BrowserActionGuard {
+  #actions = 0;
+  #lastFingerprint: string | null = null;
+  #identicalObservations = 0;
+  #terminalReason: BrowserLimitReason | null = null;
+  readonly #maxActions: number;
+  readonly #timeoutMs: number;
+
+  constructor(private readonly startedAt: number, options: BrowserActionGuardOptions = {}) {
+    this.#maxActions = options.maxActions ?? MAX_ACTIONS;
+    this.#timeoutMs = options.timeoutMs ?? CASE_TIMEOUT_MS;
+  }
+
+  get actions(): number {
+    return this.#actions;
+  }
+
+  start(now = Date.now()): BrowserLimitReason | null {
+    if (this.#terminalReason) return this.#terminalReason;
+    if (now - this.startedAt >= this.#timeoutMs) return this.#setTerminal("time_limit");
+    if (this.#actions >= this.#maxActions) return this.#setTerminal("action_limit");
+    this.#actions += 1;
+    return null;
+  }
+
+  observe(observation: Observation | null, networkProgress: string): BrowserLimitReason | null {
+    if (this.#terminalReason) return this.#terminalReason;
+    if (observation) {
+      const interactive = observation.interactive.map((target) => [target.kind, target.name, target.nameSource, target.enabled, target.bounds]);
+      const fingerprint = JSON.stringify([observation.url, observation.visibleText, interactive, networkProgress]);
+      this.#identicalObservations = fingerprint === this.#lastFingerprint ? this.#identicalObservations + 1 : 1;
+      this.#lastFingerprint = fingerprint;
+      if (this.#identicalObservations >= 3) return this.#setTerminal("no_progress");
+    }
+    if (this.#actions >= this.#maxActions) return this.#setTerminal("action_limit");
+    return null;
+  }
+
+  terminate(reason: BrowserLimitReason): BrowserLimitReason {
+    return this.#setTerminal(reason);
+  }
+
+  #setTerminal(reason: BrowserLimitReason): BrowserLimitReason {
+    this.#terminalReason = reason;
+    return reason;
+  }
+}
+
+interface PromptSession {
+  prompt(text: string): Promise<void>;
+  abort(): Promise<void>;
+  setActiveToolsByName(toolNames: string[]): void;
+}
+
+interface AssistantTextSession {
+  getLastAssistantText(): string | undefined;
+  messages?: readonly unknown[];
+}
+
+export function finalAssistantText(session: AssistantTextSession, deltas: readonly string[]): string {
+  const lastAssistant = session.messages?.slice().reverse().find((message): message is { role: "assistant"; stopReason?: string; errorMessage?: string } => Boolean(message && typeof message === "object" && "role" in message && message.role === "assistant"));
+  if (lastAssistant?.stopReason === "error") throw new Error(lastAssistant.errorMessage || "model provider returned an unknown error");
+  return session.getLastAssistantText() || deltas.join("");
+}
+
+export async function promptWithFinalization(session: PromptSession, initialPrompt: string, finalPrompt: string, onCaseTimeout: () => void, caseTimeoutMs = CASE_TIMEOUT_MS, finalizationTimeoutMs = FINALIZATION_TIMEOUT_MS): Promise<boolean> {
+  let caseTimedOut = false;
+  const caseTimer = setTimeout(() => {
+    caseTimedOut = true;
+    void session.abort().catch(() => {});
+  }, caseTimeoutMs);
+  try {
+    await session.prompt(initialPrompt);
+  } catch (error) {
+    if (!caseTimedOut) throw error;
+  } finally {
+    clearTimeout(caseTimer);
+  }
+  if (!caseTimedOut) return false;
+
+  await session.abort();
+  onCaseTimeout();
+  session.setActiveToolsByName([]);
+  let finalizationTimedOut = false;
+  const finalizationTimer = setTimeout(() => {
+    finalizationTimedOut = true;
+    void session.abort().catch(() => {});
+  }, finalizationTimeoutMs);
+  try {
+    await session.prompt(finalPrompt);
+  } catch (error) {
+    if (!finalizationTimedOut) throw error;
+  } finally {
+    clearTimeout(finalizationTimer);
+  }
+  if (finalizationTimedOut) throw new Error("case finalization time limit exceeded");
+  return true;
+}
 
 
 export class PiConfigurationError extends Error {
@@ -25,9 +143,11 @@ export interface PiCaseInput {
   goal: string;
   steps: readonly { id: string; instruction: string }[];
   oracle: { source: string; expect: readonly string[]; reject: readonly string[] };
+  secretBindings?: Readonly<Record<string, string>>;
   secretValues: ReadonlyMap<string, string>;
   browser: CaseBrowser;
   signal: AbortSignal;
+  targetUrl?: string;
   prompt?: string;
 
 }
@@ -55,6 +175,10 @@ function requireText(value: string | undefined, field: string): string {
   return value;
 }
 
+export function containsApprovedSecret(value: string, secretValues: Iterable<string>): boolean {
+  return [...secretValues].some((secret) => secret.length > 0 && value.includes(secret));
+}
+
 function emptyResourceLoader(): ResourceLoader {
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
@@ -71,7 +195,15 @@ function emptyResourceLoader(): ResourceLoader {
   };
 }
 
-function browserTool(input: PiCaseRuntimeInput, actionCounter: { value: number; lastObservation: Observation | null; repeated: number }) {
+function limitResult(reason: BrowserLimitReason, result?: unknown) {
+  return {
+    ...(result && typeof result === "object" ? result : {}),
+    limitReached: reason,
+    instruction: "Do not call browser again. Return a valid BLOCKED or INCONCLUSIVE case result using the evidence already collected.",
+  };
+}
+
+function browserTool(input: PiCaseRuntimeInput, actionGuard: BrowserActionGuard, onLimit: () => void) {
   return defineTool({
     name: "browser",
     label: "Browser",
@@ -88,9 +220,16 @@ function browserTool(input: PiCaseRuntimeInput, actionCounter: { value: number; 
     }),
     execute: async (_id, parameters) => {
       if (input.signal.aborted) throw input.signal.reason ?? new Error("case cancelled");
-      if (++actionCounter.value > MAX_ACTIONS) throw new Error(`browser action limit ${MAX_ACTIONS} exceeded`);
-      if (Date.now() - input.startedAt > CASE_TIMEOUT_MS) throw new Error("case time limit exceeded");
       const stepId = parameters.action === "close" ? input.steps.at(-1)?.id ?? "close" : requireText(parameters.stepId, "stepId");
+      if (parameters.action !== "close" && !input.steps.some((step) => step.id === stepId)) throw new Error(`browser.stepId ${stepId} is not part of the frozen case`);
+      if (parameters.value && containsApprovedSecret(parameters.value, input.secretValues.values())) {
+        return { content: [{ type: "text", text: JSON.stringify({ actionStatus: "failed", error: { code: "SECRET_VALUE", message: "Use fill(from) for approved credentials; secret values are rejected." } }) }], details: {} };
+      }
+      const beforeLimit = actionGuard.start();
+      if (beforeLimit) {
+        onLimit();
+        return { content: [{ type: "text", text: JSON.stringify(limitResult(beforeLimit)) }], details: {} };
+      }
       let result: unknown;
       switch (parameters.action) {
         case "open":
@@ -118,7 +257,7 @@ function browserTool(input: PiCaseRuntimeInput, actionCounter: { value: number; 
           result = await input.browser.press(requireText(parameters.ref, "ref"), requireText(parameters.key, "key"), stepId, input.signal);
           break;
         case "scroll":
-          result = await input.browser.scroll(stepId, parameters.deltaY ?? 600, input.signal);
+          result = await input.browser.scroll(stepId, parameters.deltaY ?? 600, input.signal, parameters.ref);
           break;
         case "close":
           await input.browser.close();
@@ -126,14 +265,9 @@ function browserTool(input: PiCaseRuntimeInput, actionCounter: { value: number; 
           break;
       }
       const observation = observationFrom(result);
-      if (observation) {
-        const fingerprint = JSON.stringify([observation.url, observation.visibleText, observation.interactive.map((target) => target.ref)]);
-        const previous = actionCounter.lastObservation ? JSON.stringify([actionCounter.lastObservation.url, actionCounter.lastObservation.visibleText, actionCounter.lastObservation.interactive.map((target) => target.ref)]) : null;
-        actionCounter.repeated = fingerprint === previous ? actionCounter.repeated + 1 : 0;
-        actionCounter.lastObservation = observation;
-        if (actionCounter.repeated >= 3) throw new Error("three consecutive observations made no progress");
-      }
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+      const afterLimit = actionGuard.observe(observation, input.browser.networkProgress(result));
+      if (afterLimit) onLimit();
+      return { content: [{ type: "text", text: JSON.stringify(afterLimit ? limitResult(afterLimit, result) : result) }], details: {} };
     },
   });
 }
@@ -143,7 +277,7 @@ export function modelForConfiguration(configuration: ModelConfiguration) {
   if (!model) throw new PiConfigurationError(`pinned model ${configuration.provider}/${configuration.model} is unavailable in Pi SDK`);
   const routing = openRouterRouting(configuration);
   if (!routing) return model;
-  return { ...model, compat: { ...model.compat, openRouterRouting: routing } };
+  return { ...model, compat: { ...model.compat, maxTokensField: "max_tokens" as const, openRouterRouting: routing } };
 }
 
 export async function verifyPiIsolation(configuration: ModelConfiguration): Promise<string[]> {
@@ -210,14 +344,16 @@ export async function repairPiResult(configuration: ModelConfiguration, apiKey: 
     signal?.addEventListener("abort", abortSession, { once: true });
     if (signal?.aborted) abortSession();
 
+    let text = "";
     try {
-      await session.prompt(JSON.stringify({ instruction: "Return corrected JSON only. Do not add claims or evidence IDs. You cannot use browser tools.", validationError, invalidResult }));
+      await session.prompt(JSON.stringify({ instruction: "Return corrected JSON only using exactly the resultContract fields. Do not add claims or evidence IDs. You cannot use browser tools. BLOCKED requires blockedBy. INCONCLUSIVE requires reviewReason. All other verdicts require blockedBy:null and reviewReason:null.", resultContract: RESULT_CONTRACT, validationError, invalidResult }));
+      text = finalAssistantText(session, chunks);
     } finally {
       signal?.removeEventListener("abort", abortSession);
       unsubscribe();
       session.dispose();
     }
-    return chunks.join("");
+    return text;
   } finally {
     await rm(runtimeDirectory, { recursive: true, force: true });
   }
@@ -230,11 +366,12 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string; model
   const startedAt = Date.now();
   const sessionManager = SessionManager.inMemory(runtimeDirectory);
 
-  const actionCounter = { value: 0, lastObservation: null as Observation | null, repeated: 0 };
+  const actionGuard = new BrowserActionGuard(startedAt);
   try {
     const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
     await runtime.setRuntimeApiKey(input.modelConfiguration.provider, input.apiKey);
     const fullInput: PiCaseRuntimeInput = { ...input, startedAt };
+    let disableBrowser = () => {};
     const { session } = await createAgentSession({
       cwd: runtimeDirectory,
       agentDir: runtimeDirectory,
@@ -244,10 +381,11 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string; model
       resourceLoader: emptyResourceLoader(),
       noTools: "all",
       tools: ["browser"],
-      customTools: [browserTool(fullInput, actionCounter)],
+      customTools: [browserTool(fullInput, actionGuard, () => disableBrowser())],
       sessionManager,
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
     });
+    disableBrowser = () => session.setActiveToolsByName([]);
     const activeTools = session.getActiveToolNames();
     if (activeTools.length !== 1 || activeTools[0] !== "browser") throw new PiConfigurationError(`isolated Pi session exposed unexpected tools: ${activeTools.join(", ")}`);
     const chunks: string[] = [];
@@ -260,15 +398,27 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string; model
     if (input.signal.aborted) abortSession();
 
     let usage: unknown | null = null;
+    let text = "";
     try {
-      await session.prompt(input.prompt ?? JSON.stringify({ caseId: input.caseId, goal: input.goal, steps: input.steps, oracle: input.oracle, instruction: "Execute the frozen case. When finished, return only one JSON case result with evidence IDs from browser tool results." }));
+      const initialPrompt = input.prompt ?? JSON.stringify({ caseId: input.caseId, targetUrl: input.targetUrl, goal: input.goal, steps: input.steps, oracle: input.oracle, approvedSecretBindings: input.secretBindings ?? Object.fromEntries([...input.secretValues.keys()].map((ref) => [ref, ref])), resultContract: RESULT_CONTRACT, instruction: "Execute the frozen case. Open targetUrl first. Use each frozen step id for its browser actions. For approved credentials, call browser.fill with from set to the ref named by approvedSecretBindings; never guess, swap, or pass credential values. Follow the frozen steps in order and interact with visible controls instead of inventing routes. When finished, return only one JSON object using exactly the resultContract fields and existing evidence IDs. BLOCKED requires blockedBy. INCONCLUSIVE requires reviewReason. All other verdicts require blockedBy:null and reviewReason:null." });
+      await promptWithFinalization(
+        session,
+        initialPrompt,
+        JSON.stringify({ caseId: input.caseId, resultContract: RESULT_CONTRACT, instruction: "The five-minute browser phase ended. Browser tools are disabled. Return only a valid BLOCKED or INCONCLUSIVE JSON object using exactly the resultContract fields and evidence IDs already collected. Do not invent evidence IDs." }),
+        () => {
+          actionGuard.terminate("time_limit");
+          chunks.length = 0;
+        },
+      );
+      if (input.signal.aborted) throw input.signal.reason ?? new Error("case cancelled");
       usage = getLastAssistantUsage(sessionManager.getEntries()) ?? null;
+      text = finalAssistantText(session, chunks);
     } finally {
       input.signal.removeEventListener("abort", abortSession);
       unsubscribe();
       session.dispose();
     }
-    return { text: chunks.join(""), activeTools, actions: actionCounter.value, usage };
+    return { text, activeTools, actions: actionGuard.actions, usage };
   } finally {
     await rm(runtimeDirectory, { recursive: true, force: true });
   }

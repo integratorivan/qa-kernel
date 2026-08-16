@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
+import { BrowserController } from "../src/browser.js";
 import { runPack } from "../src/run.js";
 
 let server: Bun.Server<unknown>;
@@ -10,7 +11,17 @@ let origin = "";
 let temporaryDirectory = "";
 
 beforeAll(() => {
-  server = Bun.serve({ port: 0, fetch: () => new Response("<button>Open cabinet</button>", { headers: { "content-type": "text/html" } }) });
+  server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/api/slow") {
+        const response = Promise.withResolvers<Response>();
+        setTimeout(() => response.resolve(new Response("ok")), 2_700);
+        return response.promise;
+      }
+      return new Response("<label>Email <input type='email'></label><button>Open cabinet</button><button onclick=\"fetch('/api/slow')\">Slow check</button>", { headers: { "content-type": "text/html" } });
+    },
+  });
   origin = `http://127.0.0.1:${server.port}`;
 });
 
@@ -23,13 +34,24 @@ afterEach(async () => {
   temporaryDirectory = "";
 });
 
-async function writePack() {
+async function writePack(caseIds = ["RUN-001"], secretRef?: string) {
   temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-run-"));
   const packDirectory = join(temporaryDirectory, "pack");
   await mkdir(join(packDirectory, "cases"), { recursive: true });
-  await writeFile(join(packDirectory, "pack.yaml"), stringify({ schemaVersion: 1, id: "runner", name: "Runner", baseUrlFrom: "TARGET_URL", allowedOriginsFrom: "QA_ALLOWED_ORIGINS", allowedSecretRefs: [] }));
-  await writeFile(join(packDirectory, "cases", "RUN-001.yaml"), stringify({ schemaVersion: 1, id: "RUN-001", title: "Open cabinet", goal: "Open the read-only cabinet", preconditions: [], data: {}, steps: [{ id: "open-login", instruction: "Open the cabinet" }], oracle: { source: "product-requirement", expect: ["Cabinet loads"], reject: ["Error screen"] }, safety: { mutation: "none" } }));
+  await writeFile(join(packDirectory, "pack.yaml"), stringify({ schemaVersion: 1, id: "runner", name: "Runner", baseUrlFrom: "TARGET_URL", allowedOriginsFrom: "QA_ALLOWED_ORIGINS", allowedSecretRefs: secretRef ? [secretRef] : [] }));
+  await Promise.all(caseIds.map((caseId) => writeFile(join(packDirectory, "cases", `${caseId}.yaml`), stringify({ schemaVersion: 1, id: caseId, title: "Open cabinet", goal: "Open the read-only cabinet", preconditions: [], data: secretRef ? { secretFrom: secretRef } : {}, steps: [{ id: "open-login", instruction: "Open the cabinet" }], oracle: { source: "product-requirement", expect: ["Cabinet loads"], reject: ["Error screen"] }, safety: { mutation: "none" } }))));
   return packDirectory;
+}
+
+async function allFileText(directory: string): Promise<string> {
+  const entries = await readdir(directory, { recursive: true, withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
+  return (await Promise.all(files.map(async (file) => Buffer.from(await Bun.file(file).arrayBuffer()).toString("utf8")))).join("\n");
+}
+
+function chromiumPids(): string[] {
+  const processList = Bun.spawnSync(["ps", "-axo", "pid=,comm="]).stdout.toString();
+  return processList.split("\n").map((line) => line.trim().split(/\s+/, 2)).filter(([, command]) => /^(Chromium|chrome|chromium)$/.test(command ?? "")).map(([pid]) => pid!);
 }
 
 test("persists a PASS only after the host validates real action evidence", async () => {
@@ -43,6 +65,7 @@ test("persists a PASS only after the host validates real action evidence", async
 
     environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
     caseExecutor: async (input) => {
+      expect(input.targetUrl).toBe(`${origin}`);
       const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
       return {
         text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "The cabinet page rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
@@ -59,4 +82,151 @@ test("persists a PASS only after the host validates real action evidence", async
   expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"verdict": "PASS"');
   expect(await readFile(join(outputDirectory, "meta.json"), "utf8")).toContain('"openRouterRouting": {\n    "order": [\n      "z-ai"\n    ],\n    "allow_fallbacks": false,\n    "require_parameters": true');
   expect(await readFile(join(outputDirectory, "meta.json"), "utf8")).toContain('"RUN-001": 1');
+  const meta = JSON.parse(await readFile(join(outputDirectory, "meta.json"), "utf8"));
+  expect(meta.versions).toEqual({ bun: Bun.version, playwright: "1.62.1", pi: "0.84.2", chromium: expect.any(String) });
+  expect(meta.timings.cases["RUN-001"]).toBeGreaterThan(0);
+});
+
+test("repairs one invalid result without browser actions", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  let repairCalls = 0;
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return { text: "not-json", activeTools: ["browser"], actions: 1, usage: null, evidenceIds: opened.afterEvidenceIds } as never;
+    },
+    resultRepairer: async (_configuration, _apiKey, _invalid, _error) => {
+      repairCalls += 1;
+      const manifest = (await readFile(join(outputDirectory, "evidence.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      const evidenceIds = manifest.filter((item) => item.caseId === "RUN-001" && item.stepId === "open-login" && item.phase === "after").map((item) => item.id);
+      return JSON.stringify({ schemaVersion: 1, testCaseId: "RUN-001", executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Cabinet rendered", evidenceIds }], reviewReason: null, error: null });
+    },
+  });
+  expect(repairCalls).toBe(1);
+  expect(output.summary.counts.PASS).toBe(1);
+});
+
+test("accepts one JSON code fence without invoking repair", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  let repairCalls = 0;
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      const result = { schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Cabinet rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null };
+      return { text: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``, activeTools: ["browser"], actions: 1, usage: null };
+    },
+    resultRepairer: async () => {
+      repairCalls += 1;
+      throw new Error("repair must not run");
+    },
+  });
+  expect(repairCalls).toBe(0);
+  expect(output.summary.counts.PASS).toBe(1);
+});
+
+test("continues after CASE_ERROR and counts an intentional status mix", async () => {
+  const caseIds = ["RUN-001", "RUN-002", "RUN-003", "RUN-004", "RUN-005"];
+  const packDirectory = await writePack(caseIds);
+  const outputDirectory = join(temporaryDirectory, "run");
+  const attempted: string[] = [];
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    caseExecutor: async (input) => {
+      attempted.push(input.caseId);
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      if (input.caseId === "RUN-001") return { text: "not-json", activeTools: ["browser"], actions: 1, usage: null };
+      const verdicts: Record<string, "PASS" | "FAIL" | "BLOCKED" | "INCONCLUSIVE"> = { "RUN-002": "PASS", "RUN-003": "FAIL", "RUN-004": "BLOCKED", "RUN-005": "INCONCLUSIVE" };
+      const verdict = verdicts[input.caseId]!;
+      return { text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict, blockedBy: verdict === "BLOCKED" ? "environment" : null, actual: `Intentional ${verdict}`, evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: verdict === "INCONCLUSIVE" ? "Fixture intentionally leaves the outcome uncertain" : null, error: null }), activeTools: ["browser"], actions: 1, usage: null };
+    },
+    resultRepairer: async () => "still-not-json",
+  });
+  expect(attempted).toEqual(caseIds);
+  expect(output.summary.counts).toEqual({ PASS: 1, FAIL: 1, BLOCKED: 1, INCONCLUSIVE: 1, CASE_ERROR: 1 });
+  expect(output.summary.exitCode).toBe(2);
+}, 30_000);
+
+test("removes a sentinel secret from browser evidence and every run artifact", async () => {
+  const secret = "secret-sentinel@example.test";
+  const packDirectory = await writePack(["RUN-001"], "QA_SECRET");
+  const outputDirectory = join(temporaryDirectory, "run");
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin, QA_SECRET: secret },
+    caseExecutor: async (input) => {
+      expect(input.secretBindings).toEqual({ secretFrom: "QA_SECRET" });
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      const email = opened.observation?.interactive.find((target) => target.name === "Email");
+      const filled = await input.browser.fillSecret(email!.ref, input.secretValues.get("QA_SECRET")!, "open-login", input.signal);
+      return { text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: `Opened for ${secret}`, evidence: [{ stepId: "open-login", claim: `The ${secret} account opened`, evidenceIds: filled.afterEvidenceIds }], reviewReason: null, error: null }), activeTools: ["browser"], actions: 2, usage: null };
+    },
+  });
+  expect(output.results[0]?.actual).toContain("[REDACTED]");
+  expect(await allFileText(outputDirectory)).not.toContain(secret);
+});
+
+test("aborts during settle and closes the owned Chromium instance", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  const abort = new AbortController();
+  const controller = new BrowserController(new Set([origin]));
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    signal: abort.signal,
+    browserController: controller,
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      const slow = opened.observation?.interactive.find((target) => target.name === "Slow check");
+      setTimeout(() => abort.abort(new Error("SIGINT")), 100);
+      await input.browser.click(slow!.ref, "open-login", input.signal);
+      throw new Error("unreachable");
+    },
+  });
+  expect(output.summary.status).toBe("ABORTED");
+  expect(output.summary.exitCode).toBe(130);
+  expect(controller.version()).toBeNull();
+});
+
+test("real SIGINT during settle exits 130 without an orphan Chromium", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "sigint-run");
+  const chromiumBefore = chromiumPids();
+  const child = Bun.spawn(["bun", "run", "test/sigint-harness.ts", packDirectory, outputDirectory, origin], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" });
+  const reader = child.stdout.getReader();
+  let stdout = "";
+  while (!stdout.includes("SETTLING")) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    stdout += new TextDecoder().decode(chunk.value);
+  }
+  reader.releaseLock();
+  expect(stdout).toContain("SETTLING");
+  child.kill("SIGINT");
+  expect(await child.exited).toBe(130);
+  const persisted = JSON.parse(await readFile(join(outputDirectory, "results.json"), "utf8"));
+  expect(persisted.status).toBe("ABORTED");
+  expect(chromiumPids()).toEqual(chromiumBefore);
 });

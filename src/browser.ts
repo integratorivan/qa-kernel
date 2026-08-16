@@ -61,7 +61,8 @@ interface NetworkEntry {
   finishedAt: number | null;
   status: number | null;
   failure: string | null;
-  eligible: boolean;
+  recordable: boolean;
+  settleEligible: boolean;
 }
 
 interface SnapshotCapture {
@@ -92,14 +93,17 @@ function isDenylisted(request: Request): boolean {
   return /analytics|telemetry|sentry|segment|datadog|google-analytics|doubleclick/.test(url) || purpose === "prefetch";
 }
 
-function isEligibleRequest(request: Request, allowedOrigins: ReadonlySet<string>): boolean {
+function isRecordableRequest(request: Request, allowedOrigins: ReadonlySet<string>): boolean {
   if (!(["document", "xhr", "fetch"] as const).includes(request.resourceType() as "document" | "xhr" | "fetch")) return false;
-  if (isDenylisted(request)) return false;
   try {
     return allowedOrigins.has(new URL(request.url()).origin);
   } catch {
     return false;
   }
+}
+
+function isSettleEligibleRequest(request: Request, allowedOrigins: ReadonlySet<string>): boolean {
+  return isRecordableRequest(request, allowedOrigins) && !isDenylisted(request);
 }
 
 function isLongLived(entry: NetworkEntry): boolean {
@@ -136,6 +140,10 @@ export class BrowserController {
     await this.#browser?.close();
     this.#browser = null;
   }
+
+  version(): string | null {
+    return this.#browser?.version() ?? null;
+  }
 }
 
 export class CaseBrowser {
@@ -145,10 +153,13 @@ export class CaseBrowser {
   #secretTargets: Locator[] = [];
   #snapshotOrdinal = 0;
   #actionOrdinal = 0;
+  #actionQueue: Promise<void> = Promise.resolve();
+  readonly #successfulInteractions = new Set<string>();
+  readonly #networkProgress = new Map<string, string>();
 
   constructor(private readonly context: BrowserContext, page: Page, private readonly allowedOrigins: ReadonlySet<string>, private readonly evidence: EvidenceStore, private readonly caseId: string, private readonly screenshot: Screenshotter) {
     this.#page = page;
-    context.on("request", (request) => this.#ledger.push({ request, startedAt: Date.now(), finishedAt: null, status: null, failure: null, eligible: isEligibleRequest(request, allowedOrigins) }));
+    context.on("request", (request) => this.#ledger.push({ request, startedAt: Date.now(), finishedAt: null, status: null, failure: null, recordable: isRecordableRequest(request, allowedOrigins), settleEligible: isSettleEligibleRequest(request, allowedOrigins) }));
     context.on("response", (response) => {
       const entry = this.#ledger.find((candidate) => candidate.request === response.request());
       if (entry) entry.status = response.status();
@@ -167,7 +178,7 @@ export class CaseBrowser {
   }
 
   async open(url: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    return this.#act(stepId, signal, async () => {
+    return this.#act("open", stepId, signal, async () => {
       const origin = new URL(url).origin;
       if (!this.allowedOrigins.has(origin)) throw new Error(`origin ${origin} is not allowed`);
       await this.#page.goto(url, { waitUntil: "domcontentloaded" });
@@ -176,7 +187,7 @@ export class CaseBrowser {
 
   async click(ref: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
     const target = await this.#target(ref);
-    return this.#act(stepId, signal, async () => {
+    return this.#act("click", stepId, signal, async () => {
       await this.#assertTargetCurrent(target, ref);
       await target.locator.click();
     });
@@ -184,7 +195,7 @@ export class CaseBrowser {
 
   async fill(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
     const target = await this.#target(ref);
-    return this.#act(stepId, signal, async () => {
+    return this.#act("fill", stepId, signal, async () => {
       await this.#assertTargetCurrent(target, ref);
       await target.locator.fill(value);
     });
@@ -192,7 +203,7 @@ export class CaseBrowser {
   async fillSecret(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
     const target = await this.#target(ref);
     this.#secretTargets.push(target.locator);
-    return this.#act(stepId, signal, async () => {
+    return this.#act("fill", stepId, signal, async () => {
       await this.#assertTargetCurrent(target, ref);
       await target.locator.fill(value);
     });
@@ -201,14 +212,33 @@ export class CaseBrowser {
 
   async press(ref: string, key: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
     const target = await this.#target(ref);
-    return this.#act(stepId, signal, async () => {
+    return this.#act("press", stepId, signal, async () => {
       await this.#assertTargetCurrent(target, ref);
       await target.locator.press(key);
     });
   }
 
-  async scroll(stepId: string, deltaY: number, signal?: AbortSignal): Promise<ActionResult> {
-    return this.#act(stepId, signal, async () => { await this.#page.mouse.wheel(0, deltaY); });
+  async scroll(stepId: string, deltaY: number, signal?: AbortSignal, ref?: string): Promise<ActionResult> {
+    const target = ref ? await this.#target(ref) : null;
+    return this.#act("scroll", stepId, signal, async () => {
+      if (!target) {
+        await this.#page.mouse.wheel(0, deltaY);
+        return;
+      }
+      await this.#assertTargetCurrent(target, ref!);
+      await target.locator.evaluate((element, amount) => {
+        let parent = element.parentElement;
+        while (parent) {
+          const style = window.getComputedStyle(parent);
+          if (/(auto|scroll)/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight) {
+            parent.scrollBy(0, amount);
+            return;
+          }
+          parent = parent.parentElement;
+        }
+        window.scrollBy(0, amount);
+      }, deltaY);
+    });
   }
 
   async snapshot(stepId: string): Promise<Observation> {
@@ -219,31 +249,54 @@ export class CaseBrowser {
     await this.context.close();
   }
 
-  async #act(stepId: string, signal: AbortSignal | undefined, operation: () => Promise<void>): Promise<ActionResult> {
-    const actionId = `act-${++this.#actionOrdinal}`;
-    const warnings: string[] = [];
-    const before = await this.#capture(stepId, "before", warnings);
-    const watermark = Date.now();
-    let actionStatus: ActionResult["actionStatus"] = "ok";
-    let error: ActionResult["error"] = null;
+  hasSuccessfulInteraction(stepId: string, evidenceIds: readonly string[]): boolean {
+    const referenced = new Set(evidenceIds);
+    return this.evidence.all().some((item) => referenced.has(item.id) && item.stepId === stepId && item.phase === "after" && this.#successfulInteractions.has(`${stepId}:${item.actionOrdinal}`));
+  }
+
+  networkProgress(result: unknown): string {
+    if (!result || typeof result !== "object" || !("actionId" in result) || typeof result.actionId !== "string") return "[]";
+    return this.#networkProgress.get(result.actionId) ?? "[]";
+  }
+
+  async #act(kind: "open" | "click" | "fill" | "press" | "scroll", stepId: string, signal: AbortSignal | undefined, operation: () => Promise<void>): Promise<ActionResult> {
+    const previousAction = this.#actionQueue;
+    let releaseAction!: () => void;
+    this.#actionQueue = new Promise<void>((resolve) => { releaseAction = resolve; });
+    await previousAction;
     try {
-      if (signal?.aborted) throw signal.reason ?? new Error("aborted");
-      await operation();
-    } catch (caught) {
-      if (signal?.aborted) throw caught;
-      actionStatus = "failed";
-      error = { code: "BROWSER_ACTION", message: caught instanceof Error ? caught.message : String(caught) };
+      const actionOrdinal = ++this.#actionOrdinal;
+      const actionId = `act-${actionOrdinal}`;
+      const warnings: string[] = [];
+      const before = await this.#capture(stepId, "before", warnings);
+      const watermark = Date.now();
+      let actionStatus: ActionResult["actionStatus"] = "ok";
+      let error: ActionResult["error"] = null;
+      try {
+        if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+        await operation();
+      } catch (caught) {
+        if (signal?.aborted) throw caught;
+        actionStatus = "failed";
+        error = { code: "BROWSER_ACTION", message: caught instanceof Error ? caught.message : String(caught) };
+      }
+      const actionEndedAt = Date.now();
+      const settled = actionStatus === "ok" ? await this.#settle(watermark, actionEndedAt, signal) : "failed";
+      let after: SnapshotCapture | null = null;
+      try {
+        after = await this.#capture(stepId, "after", warnings);
+      } catch (caught) {
+        warnings.push(`after observation failed: ${caught instanceof Error ? caught.message : String(caught)}`);
+      }
+      if (actionStatus === "ok" && settled === "complete" && after && (kind === "click" || kind === "fill" || kind === "press")) this.#successfulInteractions.add(`${stepId}:${actionOrdinal}`);
+      await this.#waitForAttributionWindow(actionEndedAt, signal);
+      const network = await this.#recordNetwork(stepId, actionOrdinal, watermark, actionEndedAt);
+      this.#networkProgress.set(actionId, network.progress);
+      const networks = network.evidence;
+      return { actionId, actionStatus, observationStatus: after ? settled : "failed", beforeEvidenceIds: before.evidence.map((item) => item.id), afterEvidenceIds: after?.evidence.map((item) => item.id) ?? [], networkEvidenceIds: networks.map((item) => item.id), observation: after?.observation ?? null, warnings, error };
+    } finally {
+      releaseAction();
     }
-    const actionEndedAt = Date.now();
-    const settled = actionStatus === "ok" ? await this.#settle(watermark, actionEndedAt, signal) : "failed";
-    let after: SnapshotCapture | null = null;
-    try {
-      after = await this.#capture(stepId, "after", warnings);
-    } catch (caught) {
-      warnings.push(`after observation failed: ${caught instanceof Error ? caught.message : String(caught)}`);
-    }
-    const networks = await this.#recordEligibleNetwork(stepId, watermark, actionEndedAt);
-    return { actionId, actionStatus, observationStatus: after ? settled : "failed", beforeEvidenceIds: before.evidence.map((item) => item.id), afterEvidenceIds: after?.evidence.map((item) => item.id) ?? [], networkEvidenceIds: networks.map((item) => item.id), observation: after?.observation ?? null, warnings, error };
   }
 
   async #capture(stepId: string, phase: "before" | "after", warnings: string[] = []): Promise<SnapshotCapture> {
@@ -337,39 +390,41 @@ export class CaseBrowser {
 
   async #settle(watermark: number, actionEndedAt: number, signal?: AbortSignal): Promise<"complete" | "incomplete"> {
     const requestWindowEndsAt = actionEndedAt + REQUEST_WINDOW_MS;
-    while (Date.now() < requestWindowEndsAt) {
-      if (signal?.aborted) throw signal.reason ?? new Error("aborted");
-      await this.#page.waitForTimeout(50);
-    }
-    const eligible = this.#ledger.filter((entry) => entry.eligible && entry.startedAt >= watermark && entry.startedAt <= requestWindowEndsAt && !isLongLived(entry));
     const deadline = watermark + SETTLE_DEADLINE_MS;
-    while (eligible.some((entry) => entry.finishedAt === null) && Date.now() < deadline) {
-      if (signal?.aborted) throw signal.reason ?? new Error("aborted");
-      await this.#page.waitForTimeout(50);
-    }
-    if (eligible.some((entry) => entry.finishedAt === null)) return "incomplete";
-    await this.#waitForDomQuiet(deadline, signal);
-    return Date.now() > deadline ? "incomplete" : "complete";
-  }
-
-  async #waitForDomQuiet(deadline: number, signal?: AbortSignal): Promise<void> {
     let previous = await this.#page.locator("body").innerText();
     let quietSince = Date.now();
+    let sawEligibleRequest = false;
     while (Date.now() < deadline) {
       if (signal?.aborted) throw signal.reason ?? new Error("aborted");
-      await this.#page.waitForTimeout(50);
+      const now = Date.now();
+      const eligible = this.#ledger.filter((entry) => entry.settleEligible && entry.startedAt >= watermark && entry.startedAt <= requestWindowEndsAt && !isLongLived(entry));
+      if (eligible.length > 0) sawEligibleRequest = true;
       const current = await this.#page.locator("body").innerText();
       if (current !== previous) {
         previous = current;
-        quietSince = Date.now();
+        quietSince = now;
       }
-      if (Date.now() - quietSince >= DOM_QUIET_MS) return;
+      const domIsQuiet = now - quietSince >= DOM_QUIET_MS;
+      if (domIsQuiet && (!sawEligibleRequest || eligible.every((entry) => entry.finishedAt !== null))) return "complete";
+      if (!sawEligibleRequest && now >= requestWindowEndsAt) return "incomplete";
+      await this.#page.waitForTimeout(50);
     }
+    return "incomplete";
   }
 
-  async #recordEligibleNetwork(stepId: string, watermark: number, actionEndedAt: number): Promise<Evidence[]> {
+  async #recordNetwork(stepId: string, actionOrdinal: number, watermark: number, actionEndedAt: number): Promise<{ evidence: Evidence[]; progress: string }> {
     const requestWindowEndsAt = actionEndedAt + REQUEST_WINDOW_MS;
-    const eligible = this.#ledger.filter((entry) => entry.eligible && entry.startedAt >= watermark && entry.startedAt <= requestWindowEndsAt);
-    return Promise.all(eligible.map(async (entry) => this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase: "after", kind: "network", url: pathWithoutQuery(entry.request.url()), extension: "json", content: JSON.stringify({ method: entry.request.method(), url: pathWithoutQuery(entry.request.url()), status: entry.status, resourceType: entry.request.resourceType(), duration: (entry.finishedAt ?? Date.now()) - entry.startedAt, error: entry.failure }) })));
+    const recordable = this.#ledger.filter((entry) => entry.recordable && entry.startedAt >= watermark && entry.startedAt <= requestWindowEndsAt);
+    const facts = recordable.map((entry) => ({ method: entry.request.method(), url: pathWithoutQuery(entry.request.url()), status: entry.status, resourceType: entry.request.resourceType(), error: entry.failure, settleEligible: entry.settleEligible && !isLongLived(entry) }));
+    const evidence = await Promise.all(recordable.map(async (entry, index) => this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal, phase: "after", kind: "network", url: pathWithoutQuery(entry.request.url()), extension: "json", content: JSON.stringify({ ...facts[index], duration: (entry.finishedAt ?? Date.now()) - entry.startedAt }) })));
+    return { evidence, progress: JSON.stringify(facts) };
+  }
+
+  async #waitForAttributionWindow(actionEndedAt: number, signal?: AbortSignal): Promise<void> {
+    const windowEndsAt = actionEndedAt + REQUEST_WINDOW_MS;
+    while (Date.now() < windowEndsAt) {
+      if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+      await this.#page.waitForTimeout(Math.min(50, windowEndsAt - Date.now()));
+    }
   }
 }

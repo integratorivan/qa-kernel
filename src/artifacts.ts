@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export type EvidenceKind = "screenshot" | "snapshot" | "network";
@@ -54,6 +54,14 @@ export async function appendNdjson(path: string, value: unknown): Promise<void> 
   await appendFile(path, `${JSON.stringify(value)}\n`, "utf8");
 }
 
+export async function runtimeVersions(): Promise<{ bun: string; playwright: string; pi: string }> {
+  const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json() as { dependencies: Record<string, string> };
+  const playwright = packageJson.dependencies.playwright;
+  const pi = packageJson.dependencies["@earendil-works/pi-coding-agent"];
+  if (!playwright || !pi) throw new Error("runtime package versions are missing from package.json");
+  return { bun: Bun.version, playwright, pi };
+}
+
 export class EvidenceStore {
   readonly #byId = new Map<string, Evidence>();
 
@@ -85,12 +93,20 @@ export class EvidenceStore {
     return [...this.#byId.values()];
   }
 
-  validate(reference: EvidenceReference): void {
+  async validate(reference: EvidenceReference): Promise<void> {
     for (const id of reference.evidenceIds) {
       const evidence = this.#byId.get(id);
       if (!evidence) throw new EvidenceError(`unknown evidence ${id}`);
       if (evidence.caseId !== reference.caseId) throw new EvidenceError(`evidence ${id} belongs to ${evidence.caseId}, not ${reference.caseId}`);
       if (evidence.stepId !== reference.stepId) throw new EvidenceError(`evidence ${id} belongs to step ${evidence.stepId}, not ${reference.stepId}`);
+      let bytes: Uint8Array;
+      try {
+        bytes = await readFile(join(this.root, evidence.file));
+      } catch {
+        throw new EvidenceError(`evidence ${id} file is missing`);
+      }
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      if (hash !== evidence.hash) throw new EvidenceError(`evidence ${id} hash does not match its manifest`);
     }
   }
 }

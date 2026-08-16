@@ -1,6 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { appendNdjson, atomicJson, EvidenceStore, SecretRedactor } from "./artifacts.js";
+import { appendNdjson, atomicJson, EvidenceStore, runtimeVersions, SecretRedactor } from "./artifacts.js";
 import { BrowserController } from "./browser.js";
 import { loadPack, secretsForCase, type LoadedPack } from "./pack.js";
 import { executePiCase, repairPiResult } from "./pi.js";
@@ -18,6 +18,8 @@ export interface RunOptions {
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   caseExecutor?: typeof executePiCase;
+  resultRepairer?: typeof repairPiResult;
+  browserController?: BrowserController;
 }
 
 export interface RunOutput {
@@ -41,19 +43,21 @@ function caseError(caseId: string, error: unknown, redact: SecretRedactor): Case
 
 function parseModelResult(text: string): CaseResult {
   try {
-    return validateResult(JSON.parse(text));
+    const trimmed = text.trim();
+    const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+    return validateResult(JSON.parse(fenced?.[1] ?? trimmed));
   } catch (error) {
     throw new SchemaError(error instanceof Error ? error.message : String(error));
   }
 }
 
-function validateResultEvidence(result: CaseResult, caseId: string, stepIds: ReadonlySet<string>, evidence: EvidenceStore): void {
+async function validateResultEvidence(result: CaseResult, caseId: string, stepIds: ReadonlySet<string>, evidence: EvidenceStore): Promise<void> {
   if (result.testCaseId !== caseId) throw new SchemaError(`model result belongs to ${result.testCaseId}, not ${caseId}`);
   if (result.executionStatus === "error") throw new SchemaError("model must return a completed product verdict, not a case error");
   if (result.evidence.length === 0) throw new SchemaError("completed result must include evidence-backed claims");
   for (const claim of result.evidence) {
     if (!stepIds.has(claim.stepId)) throw new SchemaError(`claim references unknown step ${claim.stepId}`);
-    evidence.validate({ caseId, stepId: claim.stepId, evidenceIds: claim.evidenceIds });
+    await evidence.validate({ caseId, stepId: claim.stepId, evidenceIds: claim.evidenceIds });
   }
 }
 
@@ -71,6 +75,7 @@ async function copyApprovedCases(pack: LoadedPack, outputDirectory: string): Pro
 }
 
 export async function runPack(options: RunOptions): Promise<RunOutput> {
+  const runStartedAt = Date.now();
   const environment = options.environment ?? process.env;
   const pack = await loadPack(options.packDirectory, environment);
   await mkdir(options.outputDirectory, { recursive: true });
@@ -82,13 +87,17 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
     openRouterRouting: openRouterRouting(options.modelConfiguration),
 
     targetOrigins: pack.allowedOrigins,
-    startedAt: new Date().toISOString(),
+    versions: { ...(await runtimeVersions()), chromium: null as string | null },
+    timings: { startedAt: new Date(runStartedAt).toISOString(), durationMs: 0, cases: {} as Record<string, number> },
     actionCounts: {} as Record<string, number>,
     tokenUsage: {} as Record<string, unknown | null>,
   };
-  const persistMeta = async () => atomicJson(join(options.outputDirectory, "meta.json"), { ...metadata, updatedAt: new Date().toISOString() });
+  const persistMeta = async () => {
+    metadata.timings.durationMs = Date.now() - runStartedAt;
+    await atomicJson(join(options.outputDirectory, "meta.json"), { ...metadata, updatedAt: new Date().toISOString() });
+  };
   await persistMeta();
-  const controller = new BrowserController(new Set(pack.allowedOrigins));
+  const controller = options.browserController ?? new BrowserController(new Set(pack.allowedOrigins));
   const results: CaseResult[] = [];
   let status: RunSummary["status"] = "COMPLETED";
   if (!options.apiKey) {
@@ -101,6 +110,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
 
   try {
     await controller.start();
+    metadata.versions.chromium = controller.version();
     for (const loaded of pack.cases) {
       if (options.signal?.aborted) {
         status = "ABORTED";
@@ -110,19 +120,20 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       const redactor = new SecretRedactor(values.values());
       const evidence = new EvidenceStore(options.outputDirectory, redactor);
       const browser = await controller.createCase(evidence, loaded.testCase.id);
+      const caseStartedAt = Date.now();
       let result: CaseResult;
       try {
-        const execution = await (options.caseExecutor ?? executePiCase)({ caseId: loaded.testCase.id, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, modelConfiguration: options.modelConfiguration });
+        const execution = await (options.caseExecutor ?? executePiCase)({ caseId: loaded.testCase.id, targetUrl: environment[pack.pack.baseUrlFrom]!, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretBindings: loaded.testCase.data, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, modelConfiguration: options.modelConfiguration });
         metadata.actionCounts[loaded.testCase.id] = execution.actions;
         metadata.tokenUsage[loaded.testCase.id] = execution.usage;
 
         try {
-          result = parseModelResult(execution.text);
-          validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
+          result = parseModelResult(redactor.redact(execution.text));
+          await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         } catch (error) {
-          const repaired = await repairPiResult(options.modelConfiguration, options.apiKey, execution.text, error instanceof Error ? error.message : String(error), options.signal);
-          result = parseModelResult(repaired);
-          validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
+          const repaired = await (options.resultRepairer ?? repairPiResult)(options.modelConfiguration, options.apiKey, redactor.redact(execution.text), error instanceof Error ? error.message : String(error), options.signal);
+          result = parseModelResult(redactor.redact(repaired));
+          await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         }
         await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_completed", caseId: loaded.testCase.id, actions: execution.actions, at: new Date().toISOString() });
       } catch (error) {
@@ -134,6 +145,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: "CASE_EXECUTION" });
       } finally {
         await browser.close();
+        metadata.timings.cases[loaded.testCase.id] = Date.now() - caseStartedAt;
       }
       results.push(result);
       await persistMeta();

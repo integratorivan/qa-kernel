@@ -1,0 +1,28 @@
+schemaVersion: 1
+id: FIXTURE-002
+title: Reports load in the fixture cabinet
+goal: Verify the read-only reports section loads without a product error
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the fixture sign-in screen
+  - id: fill-credentials
+    instruction: Fill the approved test credentials
+  - id: submit-login
+    instruction: Submit the sign-in form
+  - id: open-reports
+    instruction: Open the Reports section and wait for its request to settle
+oracle:
+  source: product-requirement
+  expect:
+    - The reports section displays read-only report content
+    - The reports request succeeds
+  reject:
+    - The reports request fails
+    - The reports section displays an error
+safety:
+  mutation: none

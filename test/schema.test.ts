@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EvidenceError, EvidenceStore, SecretRedactor } from "../src/artifacts.js";
@@ -39,9 +39,11 @@ describe("results and evidence", () => {
     const evidence = new EvidenceStore(temporaryDirectory, new SecretRedactor(["secret-sentinel"]));
     const recorded = await evidence.record({ caseId: "B2B-001", stepId: "open-login", actionOrdinal: 1, phase: "before", kind: "snapshot", url: "https://example.test/?token=secret-sentinel", extension: "json", content: "secret-sentinel" });
     expect(await readFile(join(temporaryDirectory, recorded.file), "utf8")).toBe("[REDACTED]");
-    expect(() => evidence.validate({ caseId: "B2B-001", stepId: "open-login", evidenceIds: [recorded.id] })).not.toThrow();
+    await expect(evidence.validate({ caseId: "B2B-001", stepId: "open-login", evidenceIds: [recorded.id] })).resolves.toBeUndefined();
 
-    expect(() => evidence.validate({ caseId: "B2B-001", stepId: "submit-login", evidenceIds: [recorded.id] })).toThrow(EvidenceError);
+    await expect(evidence.validate({ caseId: "B2B-001", stepId: "submit-login", evidenceIds: [recorded.id] })).rejects.toThrow(EvidenceError);
+    await writeFile(join(temporaryDirectory, recorded.file), "tampered", "utf8");
+    await expect(evidence.validate({ caseId: "B2B-001", stepId: "open-login", evidenceIds: [recorded.id] })).rejects.toThrow("hash");
   });
 
   test("computes counts and reports only persisted results", () => {

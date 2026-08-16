@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrowserController } from "../src/browser.js";
@@ -13,11 +13,19 @@ let temporaryDirectory = "";
 const pageHtml = `<!doctype html>
 <html><head><link rel="prefetch" href="/prefetch"></head><body>
   <label>Email <input id="email" type="email"></label>
+  <label>Password <input id="password" type="password"></label>
+  <button id="check-credentials" onclick="document.querySelector('#result').textContent = document.querySelector('#email').value === 'secret-sentinel' && document.querySelector('#password').value === 'fixture-password' ? 'Credentials intact' : 'Credentials corrupted'">Check credentials</button>
   <button id="save" onclick="document.querySelector('#result').textContent = 'Saved'">Save profile</button>
   <button id="slow" onclick="fetch('/api/slow').then(() => document.querySelector('#result').textContent = 'Slow complete')">Slow check</button>
   <button id="poll" onclick="fetch('/api/long-poll')">Open long poll</button>
   <button id="analytics" onclick="fetch('/analytics')">Send analytics</button>
   <button id="delayed-update" onclick="setTimeout(() => document.querySelector('#result').textContent = 'Delayed update', 4000)">Start delayed update</button>
+  <button id="delayed-network" onclick="setTimeout(() => fetch('/api/delayed'), 700)">Start delayed network</button>
+  <div id="scroll-box" style="height: 120px; overflow: auto">
+    <button id="scroll-anchor">Scroll area</button>
+    <div style="height: 900px"></div>
+    <button id="inside-scroll" onclick="document.querySelector('#result').textContent = 'Container clicked'">Inside container</button>
+  </div>
 
   <div id="result"></div>
   <table><thead><tr><th>Product code <button id="header-search" class="icon">⌕</button></th></tr></thead><tbody>${Array.from({ length: 100 }, (_, index) => `<tr><td><button>row-${index}</button></td></tr>`).join("")}</tbody></table>
@@ -46,6 +54,7 @@ beforeAll(async () => {
         setTimeout(() => response.resolve(new Response("ok")), 2_500);
         return response.promise;
       }
+      if (url.pathname === "/api/delayed") return new Response("delayed");
 
       return new Response(pageHtml, { headers: { "content-type": "text/html; charset=utf-8" } });
     },
@@ -76,6 +85,23 @@ async function openCase() {
 }
 
 describe("browser controller", () => {
+  test("captures a quiet observation early while keeping the full attribution window", async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));
+    const screenshotTimes: number[] = [];
+    const timingController = new BrowserController(new Set([origin]), true, async (page) => {
+      screenshotTimes.push(Date.now());
+      return page.screenshot({ type: "png" });
+    });
+    await timingController.start();
+    const browser = await timingController.createCase(new EvidenceStore(temporaryDirectory, new SecretRedactor([])), "B2B-001");
+    const startedAt = Date.now();
+    await browser.open(`${origin}/`, "open-page");
+    expect(screenshotTimes[1]! - startedAt).toBeLessThan(1_200);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_400);
+    await browser.close();
+    await timingController.close();
+  }, 10_000);
+
   test("finds named controls and a header icon without expanding table cells", async () => {
     const browser = await openCase();
     const observation = (await browser.snapshot("inspect"));
@@ -89,6 +115,23 @@ describe("browser controller", () => {
     await browser.close();
   }, 10_000);
 
+  test("serializes parallel secret fills without corrupting input values or action ordinals", async () => {
+    const browser = await openCase();
+    const observation = await browser.snapshot("inspect");
+    const email = observation.interactive.find((target) => target.name === "Email");
+    const password = observation.interactive.find((target) => target.name === "Password");
+    const [emailResult, passwordResult] = await Promise.all([
+      browser.fillSecret(email!.ref, "secret-sentinel", "fill-credentials"),
+      browser.fillSecret(password!.ref, "fixture-password", "fill-credentials"),
+    ]);
+    expect(emailResult.actionId).toBe("act-2");
+    expect(passwordResult.actionId).toBe("act-3");
+    const check = passwordResult.observation?.interactive.find((target) => target.name === "Check credentials");
+    const checked = await browser.click(check!.ref, "submit-login");
+    expect(checked.observation?.visibleText).toContain("Credentials intact");
+    await browser.close();
+  }, 15_000);
+
   test("issues fresh refs after scrolling to an offscreen control", async () => {
     const browser = await openCase();
     const initial = await browser.snapshot("initial");
@@ -98,6 +141,19 @@ describe("browser controller", () => {
     expect(below).toBeDefined();
     const clicked = await browser.click(below!.ref, "below");
     expect(clicked.observation?.visibleText).toContain("Below clicked");
+    await browser.close();
+  }, 10_000);
+
+  test("scrolls the container that owns a visible anchor ref", async () => {
+    const browser = await openCase();
+    const initial = await browser.snapshot("initial");
+    const anchor = initial.interactive.find((target) => target.name === "Scroll area");
+    expect(initial.interactive.some((target) => target.name === "Inside container")).toBe(false);
+    const scrolled = await browser.scroll("scroll", 1_000, undefined, anchor!.ref);
+    const inside = scrolled.observation?.interactive.find((target) => target.name === "Inside container");
+    expect(inside).toBeDefined();
+    const clicked = await browser.click(inside!.ref, "inside");
+    expect(clicked.observation?.visibleText).toContain("Container clicked");
     await browser.close();
   }, 10_000);
 
@@ -119,8 +175,19 @@ describe("browser controller", () => {
     const analyticsResult = await browser.click(analytics!.ref, "analytics");
     expect(Date.now() - analyticsStartedAt).toBeLessThan(2_400);
     expect(analyticsResult.observationStatus).toBe("complete");
+    expect(analyticsResult.networkEvidenceIds.length).toBe(1);
     await browser.close();
   }, 15_000);
+
+  test("attributes a request that starts after early DOM quiet but inside the 1500 ms window", async () => {
+    const browser = await openCase();
+    const observation = await browser.snapshot("inspect");
+    const delayed = observation.interactive.find((target) => target.name === "Start delayed network");
+    const result = await browser.click(delayed!.ref, "delayed-network");
+    expect(result.networkEvidenceIds).toHaveLength(1);
+    expect(await readFile(join(temporaryDirectory, "network.ndjson"), "utf8")).toContain("/api/delayed");
+    await browser.close();
+  }, 10_000);
 
   test("preserves successful actions when screenshot capture fails", async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-"));

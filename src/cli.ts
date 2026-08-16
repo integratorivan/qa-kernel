@@ -42,6 +42,18 @@ function usage(): string {
   ].join("\n");
 }
 
+export function interruptController(): { controller: AbortController; dispose: () => void } {
+  const controller = new AbortController();
+  let signals = 0;
+  const onInterrupt = () => {
+    signals += 1;
+    if (signals === 1) controller.abort(new Error("SIGINT"));
+    else process.exit(130);
+  };
+  process.on("SIGINT", onInterrupt);
+  return { controller, dispose: () => process.off("SIGINT", onInterrupt) };
+}
+
 async function report(runDirectory: string): Promise<void> {
   const input = JSON.parse(await readFile(join(runDirectory, "results.json"), "utf8")) as { status: "COMPLETED" | "ERROR" | "ABORTED"; results: unknown[] };
   if (!Array.isArray(input.results) || !["COMPLETED", "ERROR", "ABORTED"].includes(input.status)) throw new Error("results.json has an invalid run shape");
@@ -59,17 +71,15 @@ async function execute(command: Arguments): Promise<number> {
       return 0;
     }
     case "run": {
-      const abort = new AbortController();
-      let signals = 0;
-      process.on("SIGINT", () => {
-        signals += 1;
-        if (signals === 1) abort.abort(new Error("SIGINT"));
-        else process.exit(130);
-      });
-      const modelConfiguration = resolveModelConfiguration();
-      const output = await runPack({ packDirectory: requireOption(command.values, "pack"), outputDirectory: requireOption(command.values, "out"), apiKey: process.env.QA_MODEL_API_KEY ?? "", modelConfiguration, signal: abort.signal });
-      process.stdout.write(`${JSON.stringify(output.summary)}\n`);
-      return output.summary.exitCode;
+      const interrupt = interruptController();
+      try {
+        const modelConfiguration = resolveModelConfiguration();
+        const output = await runPack({ packDirectory: requireOption(command.values, "pack"), outputDirectory: requireOption(command.values, "out"), apiKey: process.env.QA_MODEL_API_KEY ?? "", modelConfiguration, signal: interrupt.controller.signal });
+        process.stdout.write(`${JSON.stringify(output.summary)}\n`);
+        return output.summary.exitCode;
+      } finally {
+        interrupt.dispose();
+      }
     }
     case "discover": {
       const draftDirectory = requireOption(command.values, "out");
@@ -80,9 +90,17 @@ async function execute(command: Arguments): Promise<number> {
       const discoveryId = new Date().toISOString().replace(/[:.]/g, "-");
       const outputDirectory = join(".qa", "discoveries", discoveryId);
       const modelConfiguration = resolveModelConfiguration();
-      const output = await discover({ packDirectory, outputDirectory, draftOutputDirectory: draftDirectory, mission: requireOption(command.values, "mission"), apiKey: process.env.QA_MODEL_API_KEY ?? "", modelConfiguration, environment });
-      process.stdout.write(`${JSON.stringify({ schemaVersion: SCHEMA_VERSION, drafts: output.drafts.map((draft) => ({ id: draft.testCase.id, status: draft.status })) })}\n`);
-      return 0;
+      const interrupt = interruptController();
+      try {
+        const output = await discover({ packDirectory, outputDirectory, draftOutputDirectory: draftDirectory, mission: requireOption(command.values, "mission"), apiKey: process.env.QA_MODEL_API_KEY ?? "", modelConfiguration, environment, signal: interrupt.controller.signal });
+        process.stdout.write(`${JSON.stringify({ schemaVersion: SCHEMA_VERSION, drafts: output.drafts.map((draft) => ({ id: draft.testCase.id, status: draft.status })) })}\n`);
+        return 0;
+      } catch (error) {
+        if (interrupt.controller.signal.aborted) return 130;
+        throw error;
+      } finally {
+        interrupt.dispose();
+      }
     }
     case "report":
       await report(requireOption(command.values, "run"));
