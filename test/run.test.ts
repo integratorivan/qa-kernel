@@ -169,6 +169,12 @@ test("persists a CASE_ERROR when creating one case fails and continues the pack"
   const controller = new BrowserController(new Set([origin]));
   const createCase = controller.createCase.bind(controller);
   let createAttempts = 0;
+  const start = controller.start.bind(controller);
+  let startCalls = 0;
+  controller.start = async () => {
+    startCalls += 1;
+    await start();
+  };
   const executed: string[] = [];
   controller.createCase = async (...args) => {
     createAttempts += 1;
@@ -196,6 +202,7 @@ test("persists a CASE_ERROR when creating one case fails and continues the pack"
   });
 
   expect(executed).toEqual(["RUN-001", "RUN-003"]);
+  expect(startCalls).toBe(2);
   expect(output.results.map((result) => result.testCaseId)).toEqual(caseIds);
   expect(output.results[1]?.executionStatus).toBe("error");
   expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"RUN-002"');
@@ -235,6 +242,88 @@ test("keeps a persisted verdict when case context cleanup fails", async () => {
   expect(output.results[0]?.verdict).toBe("PASS");
   expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"verdict": "PASS"');
   expect(await readFile(join(outputDirectory, "events.ndjson"), "utf8")).toContain('"case_close_error"');
+}, 30_000);
+
+test("persists remaining technical results when browser restart fails", async () => {
+  const caseIds = ["RUN-001", "RUN-002", "RUN-003"];
+  const packDirectory = await writePack(caseIds);
+  const outputDirectory = join(temporaryDirectory, "run");
+  const controller = new BrowserController(new Set([origin]));
+  const createCase = controller.createCase.bind(controller);
+  const start = controller.start.bind(controller);
+  let createAttempts = 0;
+  let startCalls = 0;
+  controller.start = async () => {
+    startCalls += 1;
+    if (startCalls === 2) throw new Error("fixture browser restart failed");
+    await start();
+  };
+  controller.createCase = async (...args) => {
+    createAttempts += 1;
+    if (createAttempts === 2) throw new Error("fixture context creation failed");
+    return createCase(...args);
+  };
+
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    browserController: controller,
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+
+  expect(output.summary.status).toBe("ERROR");
+  expect(output.results.map((result) => result.testCaseId)).toEqual(caseIds);
+  expect(output.results[2]?.error?.code).toBe("BROWSER_RECOVERY");
+  expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"BROWSER_RECOVERY"');
+}, 30_000);
+
+test("restarts Chromium after it dies between cases without leaving a child process", async () => {
+  const caseIds = ["RUN-001", "RUN-002", "RUN-003"];
+  const packDirectory = await writePack(caseIds);
+  const outputDirectory = join(temporaryDirectory, "run");
+  const controller = new BrowserController(new Set([origin]));
+  const chromiumBefore = chromiumPids();
+  const start = controller.start.bind(controller);
+  let startCalls = 0;
+  controller.start = async () => {
+    startCalls += 1;
+    await start();
+  };
+
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    browserController: controller,
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      if (input.caseId === "RUN-001") await controller.close();
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+
+  expect(output.results.map((result) => result.testCaseId)).toEqual(caseIds);
+  expect(output.results.map((result) => result.verdict)).toEqual(["PASS", null, "PASS"]);
+  expect(startCalls).toBe(2);
+  expect(chromiumPids()).toEqual(chromiumBefore);
 }, 30_000);
 
 test("continues after a completed BLOCKED case", async () => {

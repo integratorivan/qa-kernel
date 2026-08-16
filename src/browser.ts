@@ -137,8 +137,9 @@ export class BrowserController {
   }
 
   async close(): Promise<void> {
-    await this.#browser?.close();
+    const browser = this.#browser;
     this.#browser = null;
+    await browser?.close();
   }
 
   version(): string | null {

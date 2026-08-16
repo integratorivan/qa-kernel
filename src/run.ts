@@ -29,7 +29,7 @@ export interface RunOutput {
   summary: RunSummary;
 }
 
-function caseError(caseId: string, error: unknown, redact: SecretRedactor): CaseResult {
+function caseError(caseId: string, error: unknown, redact: SecretRedactor, code = "CASE_EXECUTION"): CaseResult {
   return {
     schemaVersion: SCHEMA_VERSION,
     testCaseId: caseId,
@@ -39,7 +39,7 @@ function caseError(caseId: string, error: unknown, redact: SecretRedactor): Case
     actual: null,
     evidence: [],
     reviewReason: null,
-    error: { code: "CASE_EXECUTION", message: redact.redact(error instanceof Error ? error.message : String(error)) },
+    error: { code, message: redact.redact(error instanceof Error ? error.message : String(error)) },
   };
 }
 
@@ -102,6 +102,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   const controller = options.browserController ?? new BrowserController(new Set(pack.allowedOrigins));
   const results: CaseResult[] = [];
   let status: RunSummary["status"] = "COMPLETED";
+  let restartBeforeNextCase = false;
   if (!options.apiKey) {
     status = "ERROR";
     await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_MODEL_API_KEY is required for the configured QA model" });
@@ -113,20 +114,47 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   try {
     await controller.start();
     metadata.versions.chromium = controller.version();
-    for (const loaded of pack.cases) {
+    for (let caseIndex = 0; caseIndex < pack.cases.length; caseIndex += 1) {
+      const loaded = pack.cases[caseIndex]!;
       if (options.signal?.aborted) {
         status = "ABORTED";
         break;
+      }
+      if (restartBeforeNextCase) {
+        try {
+          await controller.close();
+          await controller.start();
+          metadata.versions.chromium = controller.version();
+          restartBeforeNextCase = false;
+          await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "browser_restarted", at: new Date().toISOString() });
+        } catch (error) {
+          status = "ERROR";
+          const restartError = new Error(`browser restart failed: ${error instanceof Error ? error.message : String(error)}`);
+          for (const pending of pack.cases.slice(caseIndex)) {
+            results.push(caseError(pending.testCase.id, restartError, new SecretRedactor([]), "BROWSER_RECOVERY"));
+            metadata.timings.cases[pending.testCase.id] = 0;
+            await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: pending.testCase.id, at: new Date().toISOString(), code: "BROWSER_RECOVERY" });
+          }
+          await persistMeta();
+          await persistResults(options.outputDirectory, results, status);
+          break;
+        }
       }
       const caseStartedAt = Date.now();
       let browser: CaseBrowser | undefined;
       let redactor = new SecretRedactor([]);
       let result: CaseResult | undefined;
+      let createCaseFailed = false;
       try {
         const values = secretsForCase(loaded.testCase, environment);
         redactor = new SecretRedactor(values.values());
         const evidence = new EvidenceStore(options.outputDirectory, redactor);
-        browser = await controller.createCase(evidence, loaded.testCase.id);
+        try {
+          browser = await controller.createCase(evidence, loaded.testCase.id);
+        } catch (error) {
+          createCaseFailed = true;
+          throw error;
+        }
         const execution = await (options.caseExecutor ?? executePiCase)({
           caseId: loaded.testCase.id,
           targetUrl: environment[pack.pack.baseUrlFrom]!,
@@ -158,6 +186,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           status = "ABORTED";
         } else {
           result = caseError(loaded.testCase.id, error, redactor);
+          if (createCaseFailed) restartBeforeNextCase = true;
           await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: "CASE_EXECUTION" });
         }
       } finally {
