@@ -1,0 +1,28 @@
+schemaVersion: 1
+id: B2B-001
+title: Successful login with valid QA credentials
+goal: Verify that a test user can authenticate on the authorization page and reach the monitoring dashboard
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill the approved test credentials into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the authenticated cabinet
+oracle:
+  source: product-requirement
+  expect:
+    - After submit the browser leaves /authorization
+    - An authenticated cabinet page is visible, such as /monitoring/matrix
+    - The main navigation shows Мониторинг, Объекты, Справочники, Отчеты
+  reject:
+    - The page remains on /authorization after Войти
+    - An authentication error is shown
+    - The cabinet is blank or still loading without content
+safety:
+  mutation: none

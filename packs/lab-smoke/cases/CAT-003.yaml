@@ -1,0 +1,21 @@
+schemaVersion: 1
+id: CAT-003
+title: Slow catalog list finishes before the verdict
+goal: Verify Load slow list shows Slow list ready after the delayed request
+preconditions:
+  - The catalog is open
+data: {}
+steps:
+  - id: open-catalog
+    instruction: Open http://127.0.0.1:3200/catalog
+  - id: load-slow
+    instruction: Click Load slow list and wait until it finishes
+oracle:
+  source: product-requirement
+  expect:
+    - Slow list ready is visible
+    - SKU-10 Late is listed
+  reject:
+    - The verdict is made while status is still Loading
+safety:
+  mutation: none

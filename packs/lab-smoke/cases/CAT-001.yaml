@@ -1,0 +1,22 @@
+schemaVersion: 1
+id: CAT-001
+title: Catalog search finds a wine SKU
+goal: Verify searching for wine returns SKU-1 Wine
+preconditions:
+  - The catalog is open
+data: {}
+steps:
+  - id: open-catalog
+    instruction: Open http://127.0.0.1:3200/catalog
+  - id: search-wine
+    instruction: Type wine into Search and click Search catalog
+oracle:
+  source: product-requirement
+  expect:
+    - SKU-1 Wine is listed
+    - Search complete is shown
+  reject:
+    - No catalog matches
+    - The list is unchanged
+safety:
+  mutation: none

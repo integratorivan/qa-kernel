@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: CAB-003
+title: Sign in stays disabled until both fields are filled
+goal: Verify the Sign in button is disabled while a field is empty
+preconditions:
+  - The user is signed out
+data: {}
+steps:
+  - id: open-login
+    instruction: Open the lab cabinet sign-in screen
+  - id: observe-disabled
+    instruction: Confirm Sign in is disabled while Email and Password are empty
+oracle:
+  source: qa-heuristic
+  expect:
+    - Sign in is disabled on the empty form
+  reject:
+    - Sign in is enabled with empty fields
+safety:
+  mutation: none

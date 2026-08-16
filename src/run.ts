@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { appendNdjson, atomicJson, EvidenceStore, runtimeVersions, SecretRedactor } from "./artifacts.js";
 import { BrowserController } from "./browser.js";
 import { loadPack, secretsForCase, type LoadedPack } from "./pack.js";
+import { extractJsonText } from "./json-text.js";
 import { executePiCase, repairPiResult } from "./pi.js";
 import { openRouterRouting, type ModelConfiguration } from "./model.js";
 
-import { markdownReport, summarize, type RunSummary } from "./report.js";
+import { htmlDashboard } from "./dashboard.js";
+import { loadAccess, markdownReport, summarize, type RunSummary } from "./report.js";
 import { type CaseResult, SCHEMA_VERSION, SchemaError, validateResult } from "./schema.js";
 
 export interface RunOptions {
@@ -43,9 +45,7 @@ function caseError(caseId: string, error: unknown, redact: SecretRedactor): Case
 
 function parseModelResult(text: string): CaseResult {
   try {
-    const trimmed = text.trim();
-    const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
-    return validateResult(JSON.parse(fenced?.[1] ?? trimmed));
+    return validateResult(JSON.parse(extractJsonText(text)));
   } catch (error) {
     throw new SchemaError(error instanceof Error ? error.message : String(error));
   }
@@ -63,8 +63,10 @@ async function validateResultEvidence(result: CaseResult, caseId: string, stepId
 
 async function persistResults(outputDirectory: string, results: readonly CaseResult[], status: RunSummary["status"]): Promise<RunSummary> {
   const summary = summarize(results, status);
+  const access = await loadAccess(outputDirectory);
   await atomicJson(join(outputDirectory, "results.json"), { schemaVersion: SCHEMA_VERSION, status, results, summary });
-  await Bun.write(join(outputDirectory, "report.md"), markdownReport(results, summary));
+  await Bun.write(join(outputDirectory, "report.md"), markdownReport(results, summary, access));
+  await Bun.write(join(outputDirectory, "dashboard.html"), htmlDashboard(results, summary, access));
   return summary;
 }
 
@@ -123,7 +125,20 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       const caseStartedAt = Date.now();
       let result: CaseResult;
       try {
-        const execution = await (options.caseExecutor ?? executePiCase)({ caseId: loaded.testCase.id, targetUrl: environment[pack.pack.baseUrlFrom]!, goal: loaded.testCase.goal, steps: loaded.testCase.steps, oracle: loaded.testCase.oracle, secretBindings: loaded.testCase.data, secretValues: values, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, modelConfiguration: options.modelConfiguration });
+        const execution = await (options.caseExecutor ?? executePiCase)({
+          caseId: loaded.testCase.id,
+          targetUrl: environment[pack.pack.baseUrlFrom]!,
+          goal: loaded.testCase.goal,
+          steps: loaded.testCase.steps,
+          oracle: loaded.testCase.oracle,
+          secretBindings: loaded.testCase.data,
+          secretValues: values,
+          browser,
+          signal: options.signal ?? new AbortController().signal,
+          apiKey: options.apiKey,
+          modelConfiguration: options.modelConfiguration,
+          onAccess: async (event) => appendNdjson(join(options.outputDirectory, "access.ndjson"), event),
+        });
         metadata.actionCounts[loaded.testCase.id] = execution.actions;
         metadata.tokenUsage[loaded.testCase.id] = execution.usage;
 

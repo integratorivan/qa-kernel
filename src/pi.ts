@@ -5,24 +5,16 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createAgentSession, createExtensionRuntime, defineTool, getLastAssistantUsage, ModelRuntime, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { CaseBrowser, Observation } from "./browser.js";
+import { accessLine, type AccessSink } from "./access.js";
+import { RESULT_JSON_SCHEMA } from "./contracts.js";
 import { openRouterRouting, type ModelConfiguration } from "./model.js";
+import { completeStructuredJson } from "./structured.js";
 
 
 const MAX_ACTIONS = 25;
 const CASE_TIMEOUT_MS = 5 * 60_000;
 const FINALIZATION_TIMEOUT_MS = 30_000;
 const models = builtinModels();
-const RESULT_CONTRACT = {
-  schemaVersion: 1,
-  testCaseId: "frozen case id",
-  executionStatus: "completed",
-  verdict: "PASS | FAIL | BLOCKED | INCONCLUSIVE",
-  blockedBy: "capability | credentials | environment | safety | product | null",
-  actual: "string",
-  evidence: [{ stepId: "existing frozen step id", claim: "string", evidenceIds: ["existing evidence id"] }],
-  reviewReason: "string only for INCONCLUSIVE, otherwise null",
-  error: null,
-} as const;
 
 export type BrowserLimitReason = "action_limit" | "time_limit" | "no_progress";
 
@@ -96,6 +88,8 @@ export function finalAssistantText(session: AssistantTextSession, deltas: readon
   return session.getLastAssistantText() || deltas.join("");
 }
 
+export { extractJsonText } from "./json-text.js";
+
 export async function promptWithFinalization(session: PromptSession, initialPrompt: string, finalPrompt: string, onCaseTimeout: () => void, caseTimeoutMs = CASE_TIMEOUT_MS, finalizationTimeoutMs = FINALIZATION_TIMEOUT_MS): Promise<boolean> {
   let caseTimedOut = false;
   const caseTimer = setTimeout(() => {
@@ -149,6 +143,7 @@ export interface PiCaseInput {
   signal: AbortSignal;
   targetUrl?: string;
   prompt?: string;
+  onAccess?: AccessSink;
 
 }
 
@@ -267,7 +262,30 @@ function browserTool(input: PiCaseRuntimeInput, actionGuard: BrowserActionGuard,
       const observation = observationFrom(result);
       const afterLimit = actionGuard.observe(observation, input.browser.networkProgress(result));
       if (afterLimit) onLimit();
-      return { content: [{ type: "text", text: JSON.stringify(afterLimit ? limitResult(afterLimit, result) : result) }], details: {} };
+      const payload = afterLimit ? limitResult(afterLimit, result) : result;
+      if (input.onAccess) {
+        const actionResult = result && typeof result === "object" ? result as { actionStatus?: string; observationStatus?: string; afterEvidenceIds?: string[]; networkEvidenceIds?: string[] } : {};
+        const event = {
+          at: new Date().toISOString(),
+          caseId: input.caseId,
+          stepId,
+          action: parameters.action,
+          ref: parameters.ref ?? null,
+          from: parameters.from ?? null,
+          requestedUrl: parameters.url ?? null,
+          pageUrl: observation?.url ?? null,
+          actionStatus: actionResult.actionStatus ?? null,
+          observationStatus: actionResult.observationStatus ?? null,
+          screenshotId: observation?.screenshotId ?? null,
+          snapshotId: observation?.snapshotId ?? null,
+          networkEvidenceIds: actionResult.networkEvidenceIds ?? [],
+          interactiveCount: observation?.interactive.length ?? null,
+          limitReached: afterLimit,
+        };
+        await input.onAccess(event);
+        process.stderr.write(`qa access: ${accessLine(event)}\n`);
+      }
+      return { content: [{ type: "text", text: JSON.stringify(payload) }], details: {} };
     },
   });
 }
@@ -316,46 +334,61 @@ export async function verifyPiIsolation(configuration: ModelConfiguration): Prom
   }
 }
 
-export async function repairPiResult(configuration: ModelConfiguration, apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal): Promise<string> {
-  if (!apiKey) throw new PiConfigurationError("QA_MODEL_API_KEY is required for the configured QA model");
-  const model = modelForConfiguration(configuration);
-  const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-repair-"));
+export async function repairPiResult(configuration: ModelConfiguration, apiKey: string, invalidResult: string, validationError: string, signal?: AbortSignal, resultContract: unknown = RESULT_JSON_SCHEMA): Promise<string> {
+  const schema = (resultContract && typeof resultContract === "object" ? resultContract : RESULT_JSON_SCHEMA) as Record<string, unknown>;
+  const userContent = JSON.stringify({
+    instruction: "Return corrected JSON only. Match the JSON schema exactly. Do not invent evidence IDs. You cannot use browser tools.",
+    validationError,
+    invalidResult,
+    resultContract: schema,
+  });
   try {
-    const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
-    await runtime.setRuntimeApiKey(configuration.provider, apiKey);
-    const { session } = await createAgentSession({
-      cwd: runtimeDirectory,
-      agentDir: runtimeDirectory,
-      model,
-      thinkingLevel: "high",
-      modelRuntime: runtime,
-      resourceLoader: emptyResourceLoader(),
-      noTools: "all",
-      tools: [],
-      sessionManager: SessionManager.inMemory(runtimeDirectory),
-      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+    return await completeStructuredJson({
+      configuration,
+      apiKey,
+      schemaName: "qa_case_result",
+      schema,
+      ...(signal ? { signal } : {}),
+      userContent,
     });
-    if (session.getActiveToolNames().length !== 0) throw new PiConfigurationError("repair session unexpectedly exposed tools");
-    const chunks: string[] = [];
-    const unsubscribe = session.subscribe((event) => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") chunks.push(event.assistantMessageEvent.delta);
-    });
-    const abortSession = () => { void session.abort().catch(() => {}); };
-    signal?.addEventListener("abort", abortSession, { once: true });
-    if (signal?.aborted) abortSession();
-
-    let text = "";
+  } catch (error) {
+    if (!apiKey) throw new PiConfigurationError("QA_MODEL_API_KEY is required for the configured QA model");
+    const model = modelForConfiguration(configuration);
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "qa-kernel-pi-repair-"));
     try {
-      await session.prompt(JSON.stringify({ instruction: "Return corrected JSON only using exactly the resultContract fields. Do not add claims or evidence IDs. You cannot use browser tools. BLOCKED requires blockedBy. INCONCLUSIVE requires reviewReason. All other verdicts require blockedBy:null and reviewReason:null.", resultContract: RESULT_CONTRACT, validationError, invalidResult }));
-      text = finalAssistantText(session, chunks);
+      const runtime = await ModelRuntime.create({ authPath: join(runtimeDirectory, "auth.json"), modelsPath: join(runtimeDirectory, "models.json") });
+      await runtime.setRuntimeApiKey(configuration.provider, apiKey);
+      const { session } = await createAgentSession({
+        cwd: runtimeDirectory,
+        agentDir: runtimeDirectory,
+        model,
+        thinkingLevel: "high",
+        modelRuntime: runtime,
+        resourceLoader: emptyResourceLoader(),
+        noTools: "all",
+        tools: [],
+        sessionManager: SessionManager.inMemory(runtimeDirectory),
+        settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+      });
+      if (session.getActiveToolNames().length !== 0) throw new PiConfigurationError("repair session unexpectedly exposed tools");
+      const chunks: string[] = [];
+      const unsubscribe = session.subscribe((event) => {
+        if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") chunks.push(event.assistantMessageEvent.delta);
+      });
+      const abortSession = () => { void session.abort().catch(() => {}); };
+      signal?.addEventListener("abort", abortSession, { once: true });
+      if (signal?.aborted) abortSession();
+      try {
+        await session.prompt(userContent);
+        return finalAssistantText(session, chunks);
+      } finally {
+        signal?.removeEventListener("abort", abortSession);
+        unsubscribe();
+        session.dispose();
+      }
     } finally {
-      signal?.removeEventListener("abort", abortSession);
-      unsubscribe();
-      session.dispose();
+      await rm(runtimeDirectory, { recursive: true, force: true });
     }
-    return text;
-  } finally {
-    await rm(runtimeDirectory, { recursive: true, force: true });
   }
 }
 
@@ -400,11 +433,11 @@ export async function executePiCase(input: PiCaseInput & { apiKey: string; model
     let usage: unknown | null = null;
     let text = "";
     try {
-      const initialPrompt = input.prompt ?? JSON.stringify({ caseId: input.caseId, targetUrl: input.targetUrl, goal: input.goal, steps: input.steps, oracle: input.oracle, approvedSecretBindings: input.secretBindings ?? Object.fromEntries([...input.secretValues.keys()].map((ref) => [ref, ref])), resultContract: RESULT_CONTRACT, instruction: "Execute the frozen case. Open targetUrl first. Use each frozen step id for its browser actions. For approved credentials, call browser.fill with from set to the ref named by approvedSecretBindings; never guess, swap, or pass credential values. Follow the frozen steps in order and interact with visible controls instead of inventing routes. When finished, return only one JSON object using exactly the resultContract fields and existing evidence IDs. BLOCKED requires blockedBy. INCONCLUSIVE requires reviewReason. All other verdicts require blockedBy:null and reviewReason:null." });
+      const initialPrompt = input.prompt ?? JSON.stringify({ caseId: input.caseId, targetUrl: input.targetUrl, goal: input.goal, steps: input.steps, oracle: input.oracle, approvedSecretBindings: input.secretBindings ?? Object.fromEntries([...input.secretValues.keys()].map((ref) => [ref, ref])), resultContract: RESULT_JSON_SCHEMA, instruction: "Execute the frozen case. Open targetUrl first. Use each frozen step id for its browser actions. For approved credentials, call browser.fill with from set to the ref named by approvedSecretBindings; never guess, swap, or pass credential values. Follow the frozen steps in order and interact with visible controls instead of inventing routes. When finished, return only one JSON object using exactly the resultContract fields and existing evidence IDs. BLOCKED requires blockedBy. INCONCLUSIVE requires reviewReason. All other verdicts require blockedBy:null and reviewReason:null." });
       await promptWithFinalization(
         session,
         initialPrompt,
-        JSON.stringify({ caseId: input.caseId, resultContract: RESULT_CONTRACT, instruction: "The five-minute browser phase ended. Browser tools are disabled. Return only a valid BLOCKED or INCONCLUSIVE JSON object using exactly the resultContract fields and evidence IDs already collected. Do not invent evidence IDs." }),
+        JSON.stringify({ caseId: input.caseId, resultContract: RESULT_JSON_SCHEMA, instruction: "The five-minute browser phase ended. Browser tools are disabled. Return only a valid BLOCKED or INCONCLUSIVE JSON object using exactly the resultContract fields and evidence IDs already collected. Do not invent evidence IDs." }),
         () => {
           actionGuard.terminate("time_limit");
           chunks.length = 0;

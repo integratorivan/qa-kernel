@@ -1,9 +1,20 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { AccessEvent } from "./access.js";
 import type { CaseResult, Verdict } from "./schema.js";
 
 export interface RunSummary {
   status: "COMPLETED" | "ERROR" | "ABORTED";
   counts: Record<Verdict | "CASE_ERROR", number>;
   exitCode: 0 | 1 | 2 | 130;
+}
+
+export async function loadAccess(runDirectory: string): Promise<AccessEvent[]> {
+  try {
+    return (await readFile(join(runDirectory, "access.ndjson"), "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as AccessEvent);
+  } catch {
+    return [];
+  }
 }
 
 export function summarize(results: readonly CaseResult[], status: RunSummary["status"] = "COMPLETED"): RunSummary {
@@ -16,7 +27,7 @@ export function summarize(results: readonly CaseResult[], status: RunSummary["st
   return { status, counts, exitCode };
 }
 
-export function markdownReport(results: readonly CaseResult[], summary: RunSummary): string {
+export function markdownReport(results: readonly CaseResult[], summary: RunSummary, access: readonly AccessEvent[] = []): string {
   const lines = [
     "# QA run report",
     "",
@@ -42,6 +53,13 @@ export function markdownReport(results: readonly CaseResult[], summary: RunSumma
       for (const claim of result.evidence) lines.push(`- ${claim.stepId}: ${claim.claim} (${claim.evidenceIds.join(", ")})`);
       if (result.evidence.length > 0) lines.push("");
     }
+  }
+  if (access.length > 0) {
+    lines.push("## Access trail", "");
+    for (const event of access) {
+      lines.push(`- ${event.at} \`${event.caseId}\` ${event.action} ${event.stepId}${event.ref ? ` ${event.ref}` : ""}${event.pageUrl ? ` → ${event.pageUrl}` : ""}${event.actionStatus ? ` (${event.actionStatus})` : ""}`);
+    }
+    lines.push("");
   }
   return `${lines.join("\n")}\n`;
 }

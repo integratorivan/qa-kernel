@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: CAB-001
+title: Valid credentials open the lab cabinet
+goal: Verify a registered test user can sign in to the lab cabinet
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the lab cabinet sign-in screen
+  - id: fill-credentials
+    instruction: Fill the approved Email and Password fields
+  - id: submit-login
+    instruction: Click Sign in
+oracle:
+  source: product-requirement
+  expect:
+    - The lab cabinet is visible
+    - The signed-in state is shown
+  reject:
+    - The sign-in form remains without explanation
+    - Authentication failed is shown
+safety:
+  mutation: none

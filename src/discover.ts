@@ -4,8 +4,11 @@ import { stringify } from "yaml";
 import { appendNdjson, atomicJson, EvidenceStore, runtimeVersions, SecretRedactor } from "./artifacts.js";
 import { BrowserController } from "./browser.js";
 import { loadPack, type LoadedPack } from "./pack.js";
-import { executePiCase } from "./pi.js";
+import { discoveryJsonSchema, DISCOVERY_INSTRUCTION, secretRefToDataKey } from "./contracts.js";
+import { extractJsonText } from "./json-text.js";
+import { executePiCase, repairPiResult } from "./pi.js";
 import { openRouterRouting, type ModelConfiguration } from "./model.js";
+import { completeStructuredJson } from "./structured.js";
 
 import { SCHEMA_VERSION, type TestCase, validateCase } from "./schema.js";
 
@@ -20,7 +23,10 @@ export interface DiscoverOptions {
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   caseExecutor?: typeof executePiCase;
+  resultRepairer?: typeof repairPiResult;
 }
+
+
 
 export interface DiscoveryDraft {
   testCase: TestCase;
@@ -51,8 +57,36 @@ function strings(value: unknown, path: string): string[] {
   return value;
 }
 
+function log(message: string): void {
+  process.stderr.write(`qa discover: ${message}\n`);
+}
+
+async function repairDiscoveryJson(options: DiscoverOptions, pack: LoadedPack, evidence: EvidenceStore, invalidResult: string, validationError: string, schema: ReturnType<typeof discoveryJsonSchema>): Promise<string> {
+  if (options.resultRepairer) return options.resultRepairer(options.modelConfiguration, options.apiKey, invalidResult, validationError, options.signal, schema);
+  const userContent = JSON.stringify({
+    instruction: "Rewrite the discovery result to match the JSON schema exactly. Each draft.case must include schemaVersion, id, title, goal, preconditions, data, steps, oracle, and safety. Do not add summary. Use only availableExploreEvidenceIds. Change unjustified ready drafts to needsCapability instead of inventing interactions.",
+    validationError,
+    invalidResult,
+    allowedSecretRefs: pack.pack.allowedSecretRefs,
+    caseDataKeys: Object.fromEntries(pack.pack.allowedSecretRefs.map((ref) => [secretRefToDataKey(ref), ref])),
+    availableExploreEvidenceIds: evidence.all().filter((item) => item.stepId === "explore").map((item) => item.id),
+  });
+  try {
+    return await completeStructuredJson({
+      configuration: options.modelConfiguration,
+      apiKey: options.apiKey,
+      schemaName: "qa_discovery_result",
+      schema,
+      ...(options.signal ? { signal: options.signal } : {}),
+      userContent,
+    });
+  } catch {
+    return repairPiResult(options.modelConfiguration, options.apiKey, invalidResult, validationError, options.signal, schema);
+  }
+}
+
 async function parseDiscovery(text: string, pack: LoadedPack, evidence: EvidenceStore, browser: Awaited<ReturnType<BrowserController["createCase"]>>): Promise<DiscoveryOutput> {
-  const raw = record(JSON.parse(text), "discovery result");
+  const raw = record(JSON.parse(extractJsonText(text)), "discovery result");
   exactKeys(raw, ["productMap", "uncoveredAreas", "drafts"], "discovery result");
   const productMap = strings(raw.productMap, "productMap");
   const uncoveredAreas = strings(raw.uncoveredAreas, "uncoveredAreas");
@@ -64,8 +98,11 @@ async function parseDiscovery(text: string, pack: LoadedPack, evidence: Evidence
     const status: DiscoveryDraft["status"] = draft.status;
     const evidenceIds = strings(draft.evidenceIds, `drafts[${index}].evidenceIds`);
     await evidence.validate({ caseId: "DISCOVERY", stepId: "explore", evidenceIds });
-    if (status === "ready" && !browser.hasSuccessfulInteraction("explore", evidenceIds)) throw new Error(`drafts[${index}] ready status requires evidence from a successful interaction`);
-    return { testCase: validateCase(draft.case, pack.pack), status, evidenceIds };
+    let resolved = status;
+    if (status === "ready" && !browser.hasSuccessfulInteraction("explore", evidenceIds)) {
+      resolved = "needsCapability";
+    }
+    return { testCase: validateCase(draft.case, pack.pack), status: resolved, evidenceIds };
   }));
   if (new Set(drafts.map((draft) => draft.testCase.id)).size !== drafts.length) throw new Error("discovery draft IDs must be unique");
   return { drafts, productMap, uncoveredAreas };
@@ -86,20 +123,53 @@ export async function discover(options: DiscoverOptions): Promise<DiscoveryOutpu
     await controller.start();
     const browser = await controller.createCase(evidence, "DISCOVERY");
     try {
+      const resultContract = discoveryJsonSchema(pack.pack.allowedSecretRefs);
       const prompt = JSON.stringify({
         mission: options.mission,
         targetUrl,
         allowedSecretRefs: pack.pack.allowedSecretRefs,
-        instruction: "Explore only areas directly reachable for this mission. Use browser.open first. Produce only JSON with productMap:string[], uncoveredAreas:string[], drafts: 2-3 objects {status:'ready'|'needsCapability', case:<semantic case>, evidenceIds:string[]}. Every draft needs current-case evidence IDs from the explore step. Do not invent unseen capability. A ready draft requires a successful key interaction; needsCapability requires an observed control the browser could not operate.",
+        resultContract,
+        instruction: DISCOVERY_INSTRUCTION,
       });
-      const output = await (options.caseExecutor ?? executePiCase)({ caseId: "DISCOVERY", targetUrl, goal: options.mission, steps: [{ id: "explore", instruction: "Explore the mission-relevant product area" }], oracle: { source: "qa-heuristic", expect: ["Grounded draft cases"], reject: ["Unseen capability"] }, secretValues, browser, signal: options.signal ?? new AbortController().signal, apiKey: options.apiKey, modelConfiguration: options.modelConfiguration, prompt });
-      const parsed = await parseDiscovery(evidence.redactText(output.text), pack, evidence, browser);
+      log("starting isolated model session and Chromium");
+      const output = await (options.caseExecutor ?? executePiCase)({
+        caseId: "DISCOVERY",
+        targetUrl,
+        goal: options.mission,
+        steps: [{ id: "explore", instruction: "Explore the mission-relevant product area" }],
+        oracle: { source: "qa-heuristic", expect: ["Grounded draft cases"], reject: ["Unseen capability"] },
+        secretValues,
+        browser,
+        signal: options.signal ?? new AbortController().signal,
+        apiKey: options.apiKey,
+        modelConfiguration: options.modelConfiguration,
+        prompt,
+        onAccess: async (event) => appendNdjson(join(options.outputDirectory, "access.ndjson"), event),
+      });
+      const modelText = evidence.redactText(output.text);
+      await Bun.write(join(options.outputDirectory, "model-output.txt"), `${modelText}\n`);
+      log(`model returned ${output.actions} browser actions; parsing structured drafts`);
+      let parsed: DiscoveryOutput;
+      try {
+        parsed = await parseDiscovery(modelText, pack, evidence, browser);
+      } catch (error) {
+        log("structured result invalid; requesting one schema-constrained JSON repair without browser tools");
+        const repaired = evidence.redactText(await repairDiscoveryJson(options, pack, evidence, modelText, error instanceof Error ? error.message : String(error), resultContract));
+        await Bun.write(join(options.outputDirectory, "model-output.repaired.txt"), `${repaired}\n`);
+        try {
+          parsed = await parseDiscovery(repaired, pack, evidence, browser);
+        } catch (repairError) {
+          const preview = extractJsonText(repaired).slice(0, 240).replaceAll("\n", " ");
+          throw new Error(`${repairError instanceof Error ? repairError.message : String(repairError)} (model output starts with: ${preview || "<empty>"})`);
+        }
+      }
       await mkdir(options.draftOutputDirectory, { recursive: true });
       await Promise.all(parsed.drafts.map((draft) => Bun.write(join(options.draftOutputDirectory, `${draft.testCase.id}.yaml`), stringify(draft.testCase))));
       await Bun.write(join(options.outputDirectory, "product-map.yaml"), stringify({ productMap: parsed.productMap, uncoveredAreas: parsed.uncoveredAreas }));
       await atomicJson(join(options.outputDirectory, "result.json"), { schemaVersion: SCHEMA_VERSION, drafts: parsed.drafts.map((draft) => ({ id: draft.testCase.id, status: draft.status, evidenceIds: draft.evidenceIds })) });
       await atomicJson(join(options.outputDirectory, "meta.json"), { schemaVersion: SCHEMA_VERSION, provider: options.modelConfiguration.provider, model: options.modelConfiguration.model, openRouterRouting: openRouterRouting(options.modelConfiguration), versions: { ...(await runtimeVersions()), chromium: controller.version() }, mission: options.mission, targetOrigin: new URL(targetUrl).origin, actionCount: output.actions, timings: { startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt } });
       await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "discovery_completed", actionCount: output.actions, at: new Date().toISOString() });
+      log(`wrote ${parsed.drafts.length} drafts to ${options.draftOutputDirectory}`);
       return parsed;
     } finally {
       await browser.close();

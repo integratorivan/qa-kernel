@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { discover } from "./discover.js";
 import { loadPack } from "./pack.js";
-import { markdownReport, summarize } from "./report.js";
+import { htmlDashboard } from "./dashboard.js";
+import { loadAccess, markdownReport, summarize } from "./report.js";
+import { labFromCli } from "./lab.js";
 import { runPack } from "./run.js";
 import { resolveModelConfiguration } from "./model.js";
 
@@ -39,6 +41,7 @@ function usage(): string {
     "qa validate --pack PACK",
     "qa run --pack PACK --out RUN_DIRECTORY",
     "qa report --run RUN_DIRECTORY",
+    "qa lab --pack PACK --out LAB_DIRECTORY [--repeat N]",
   ].join("\n");
 }
 
@@ -58,8 +61,11 @@ async function report(runDirectory: string): Promise<void> {
   const input = JSON.parse(await readFile(join(runDirectory, "results.json"), "utf8")) as { status: "COMPLETED" | "ERROR" | "ABORTED"; results: unknown[] };
   if (!Array.isArray(input.results) || !["COMPLETED", "ERROR", "ABORTED"].includes(input.status)) throw new Error("results.json has an invalid run shape");
   const results: CaseResult[] = input.results.map((result) => validateResult(result));
-  const rendered = markdownReport(results, summarize(results, input.status));
+  const access = await loadAccess(runDirectory);
+  const summary = summarize(results, input.status);
+  const rendered = markdownReport(results, summary, access);
   await Bun.write(join(runDirectory, "report.md"), rendered);
+  await Bun.write(join(runDirectory, "dashboard.html"), htmlDashboard(results, summary, access));
   process.stdout.write(rendered);
 }
 
@@ -105,6 +111,16 @@ async function execute(command: Arguments): Promise<number> {
     case "report":
       await report(requireOption(command.values, "run"));
       return 0;
+    case "lab": {
+      const interrupt = interruptController();
+      try {
+        const repeat = command.values.repeat ? Number(command.values.repeat) : undefined;
+        if (repeat !== undefined && (!Number.isInteger(repeat) || repeat < 1)) throw new Error("--repeat must be a positive integer");
+        return await labFromCli(requireOption(command.values, "pack"), requireOption(command.values, "out"), repeat, interrupt.controller.signal);
+      } finally {
+        interrupt.dispose();
+      }
+    }
     default:
       throw new Error(`unknown command ${command.command}`);
   }

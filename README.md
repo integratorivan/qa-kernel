@@ -42,6 +42,8 @@ bun run qa run --pack packs/fixture-smoke --out .qa/runs/local-fixture
 bun run qa report --run .qa/runs/local-fixture
 ```
 
+For the same loop without assembling flags, `bun run tui` is a local menu over those commands: it loads `.env`, can start the fixture, runs `validate` / `discover` / `run` / `report`, and moves selected YAML from `drafts/` to `cases/`. It is not the product UI.
+
 `run` creates a new browser context and isolated Pi session per case. `report` reads only saved `results.json`; it does not invoke a model.
 
 The fixture pack intentionally contains one known PASS (`FIXTURE-001`, valid sign-in) and one known FAIL (`FIXTURE-002`, reports return HTTP 500). This pair is the live-model acceptance gate; unit stubs do not count as proof of those verdicts.

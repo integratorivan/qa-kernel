@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: CAT-002
+title: Unknown catalog query shows an empty state
+goal: Verify a search for zzznomatch shows No catalog matches
+preconditions:
+  - The catalog is open
+data: {}
+steps:
+  - id: open-catalog
+    instruction: Open http://127.0.0.1:3200/catalog
+  - id: search-missing
+    instruction: Search for zzznomatch
+oracle:
+  source: product-requirement
+  expect:
+    - No catalog matches is visible
+  reject:
+    - SKU-1 Wine remains as the only result without an empty state
+safety:
+  mutation: none

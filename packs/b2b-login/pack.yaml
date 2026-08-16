@@ -1,0 +1,8 @@
+schemaVersion: 1
+id: b2b-login
+name: B2B login smoke
+baseUrlFrom: TARGET_URL
+allowedOriginsFrom: QA_ALLOWED_ORIGINS
+allowedSecretRefs:
+  - QA_EMAIL
+  - QA_PASSWORD

@@ -1,0 +1,8 @@
+schemaVersion: 1
+id: lab-smoke
+name: Lab smoke
+baseUrlFrom: TARGET_URL
+allowedOriginsFrom: QA_ALLOWED_ORIGINS
+allowedSecretRefs:
+  - QA_EMAIL
+  - QA_PASSWORD

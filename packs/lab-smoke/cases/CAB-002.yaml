@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: CAB-002
+title: Wrong password stays on the sign-in form
+goal: Verify an invalid password does not open the cabinet
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the lab cabinet sign-in screen
+  - id: fill-wrong-password
+    instruction: Fill Email from QA_EMAIL, then type an incorrect non-secret password into Password. Do not use QA_PASSWORD.
+  - id: submit-login
+    instruction: Click Sign in
+oracle:
+  source: product-requirement
+  expect:
+    - Authentication failed is visible
+    - The cabinet stays hidden
+  reject:
+    - The lab cabinet opens
+    - The form stays empty without an error
+safety:
+  mutation: none

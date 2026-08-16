@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { resolveModelConfiguration } from "../src/model.js";
-import { BrowserActionGuard, containsApprovedSecret, finalAssistantText, modelForConfiguration, promptWithFinalization, verifyPiIsolation } from "../src/pi.js";
+import { BrowserActionGuard, containsApprovedSecret, extractJsonText, finalAssistantText, modelForConfiguration, promptWithFinalization, verifyPiIsolation } from "../src/pi.js";
 
 const observation = {
   snapshotId: "snapshot",
@@ -77,6 +77,12 @@ test("hard case timeout aborts inference and runs one tool-free finalization tur
 test("uses the session-owned final assistant text with deltas only as fallback", () => {
   expect(finalAssistantText({ getLastAssistantText: () => '{"verdict":"PASS"}' }, ["partial"])).toBe('{"verdict":"PASS"}');
   expect(finalAssistantText({ getLastAssistantText: () => undefined }, ["fall", "back"])).toBe("fallback");
+});
+
+test("extracts a JSON object from prose or a fenced block", () => {
+  expect(extractJsonText('Based on the visit {"productMap":["Login"],"uncoveredAreas":[],"drafts":[]}')).toBe('{"productMap":["Login"],"uncoveredAreas":[],"drafts":[]}');
+  expect(extractJsonText("```json\n{\"ok\":true}\n```")).toBe('{"ok":true}');
+  expect(extractJsonText("Based on exploration there is no object")).toBe("Based on exploration there is no object");
 });
 
 test("surfaces a provider error instead of repairing an empty JSON result", () => {

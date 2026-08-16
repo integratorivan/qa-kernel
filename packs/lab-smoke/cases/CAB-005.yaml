@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: CAB-005
+title: Header search icon is operable
+goal: Verify the product-code header search control is visible and can be clicked
+preconditions:
+  - The cabinet table is visible
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the lab cabinet sign-in screen
+  - id: sign-in
+    instruction: Sign in with the approved credentials
+  - id: click-header-search
+    instruction: Click the search icon next to Product code
+oracle:
+  source: qa-heuristic
+  expect:
+    - The Product code header search control is present
+    - The click does not require a raw SVG target
+  reject:
+    - The header icon is missing from the snapshot
+    - The only search controls are raw table cells
+safety:
+  mutation: none
