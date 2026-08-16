@@ -23,6 +23,7 @@ export interface RunOptions {
   browserController?: BrowserController;
   browserPhaseTimeoutMs?: number;
   abortGraceMs?: number;
+  repairTimeoutMs?: number;
 }
 
 export interface RunOutput {
@@ -219,7 +220,12 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           result = parseModelResult(redactor.redact(execution.text));
           await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         } catch (error) {
-          const repaired = await (options.resultRepairer ?? repairPiResult)(options.modelConfiguration, options.apiKey, redactor.redact(execution.text), error instanceof Error ? error.message : String(error), options.signal);
+          const repaired = await executeWithDeadline(
+            (signal) => (options.resultRepairer ?? repairPiResult)(options.modelConfiguration, options.apiKey, redactor.redact(execution.text), error instanceof Error ? error.message : String(error), signal),
+            options.signal,
+            options.repairTimeoutMs ?? 30_000,
+            options.abortGraceMs ?? 5_000,
+          );
           result = parseModelResult(redactor.redact(repaired));
           await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         }
