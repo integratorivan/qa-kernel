@@ -423,3 +423,35 @@ test("real SIGINT during settle exits 130 without an orphan Chromium", async () 
   expect(persisted.status).toBe("ABORTED");
   expect(chromiumPids()).toEqual(chromiumBefore);
 });
+
+test("escapes a hung browser phase after the host deadline and continues", async () => {
+  const caseIds = ["RUN-001", "RUN-002"];
+  const packDirectory = await writePack(caseIds);
+  const outputDirectory = join(temporaryDirectory, "run");
+  const startedAt = Date.now();
+
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    browserPhaseTimeoutMs: 3_000,
+    abortGraceMs: 20,
+    caseExecutor: async (input) => {
+      if (input.caseId === "RUN-001") return await new Promise<never>(() => {});
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+
+  expect(Date.now() - startedAt).toBeLessThan(5_000);
+  expect(output.results.map((result) => result.testCaseId)).toEqual(caseIds);
+  expect(output.results[0]?.error?.code).toBe("CASE_PHASE_TIMEOUT");
+  expect(output.results[1]?.verdict).toBe("PASS");
+}, 30_000);

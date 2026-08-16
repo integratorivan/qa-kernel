@@ -16,17 +16,53 @@ export interface RunOptions {
   outputDirectory: string;
   apiKey: string;
   modelConfiguration: ModelConfiguration;
-
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   caseExecutor?: typeof executePiCase;
   resultRepairer?: typeof repairPiResult;
   browserController?: BrowserController;
+  browserPhaseTimeoutMs?: number;
+  abortGraceMs?: number;
 }
 
 export interface RunOutput {
   results: CaseResult[];
   summary: RunSummary;
+}
+
+class CaseDeadlineError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
+async function executeWithDeadline<T>(execute: (signal: AbortSignal) => Promise<T>, externalSignal: AbortSignal | undefined, browserPhaseTimeoutMs: number, abortGraceMs: number): Promise<T> {
+  const controller = new AbortController();
+  let phaseTimer: Parameters<typeof clearTimeout>[0];
+  let graceTimer: Parameters<typeof clearTimeout>[0];
+  let rejectEscape: ((reason: unknown) => void) | undefined;
+  const abort = (reason: unknown) => {
+    if (controller.signal.aborted) return;
+    controller.abort(reason);
+    graceTimer = setTimeout(() => rejectEscape?.(reason), abortGraceMs);
+  };
+  const onExternalAbort = () => abort(externalSignal?.reason ?? new Error("case cancelled"));
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+  if (externalSignal?.aborted) onExternalAbort();
+  const deadline = new CaseDeadlineError("CASE_PHASE_TIMEOUT");
+  phaseTimer = setTimeout(() => abort(deadline), browserPhaseTimeoutMs);
+  const work = execute(controller.signal);
+  void work.catch(() => {});
+  const escape = new Promise<never>((_, reject) => {
+    rejectEscape = reject;
+  });
+  try {
+    return await Promise.race([work, escape]);
+  } finally {
+    clearTimeout(phaseTimer);
+    clearTimeout(graceTimer);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
+  }
 }
 
 function caseError(caseId: string, error: unknown, redact: SecretRedactor, code = "CASE_EXECUTION"): CaseResult {
@@ -155,20 +191,27 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           createCaseFailed = true;
           throw error;
         }
-        const execution = await (options.caseExecutor ?? executePiCase)({
-          caseId: loaded.testCase.id,
-          targetUrl: environment[pack.pack.baseUrlFrom]!,
-          goal: loaded.testCase.goal,
-          steps: loaded.testCase.steps,
-          oracle: loaded.testCase.oracle,
-          secretBindings: loaded.testCase.data,
-          secretValues: values,
-          browser,
-          signal: options.signal ?? new AbortController().signal,
-          apiKey: options.apiKey,
-          modelConfiguration: options.modelConfiguration,
-          onAccess: async (event) => appendNdjson(join(options.outputDirectory, "access.ndjson"), event),
-        });
+        const caseBrowser = browser;
+        if (!caseBrowser) throw new Error(`case ${loaded.testCase.id} has no browser`);
+        const execution = await executeWithDeadline(
+          (signal) => (options.caseExecutor ?? executePiCase)({
+            caseId: loaded.testCase.id,
+            targetUrl: environment[pack.pack.baseUrlFrom]!,
+            goal: loaded.testCase.goal,
+            steps: loaded.testCase.steps,
+            oracle: loaded.testCase.oracle,
+            secretBindings: loaded.testCase.data,
+            secretValues: values,
+            browser: caseBrowser,
+            signal,
+            apiKey: options.apiKey,
+            modelConfiguration: options.modelConfiguration,
+            onAccess: async (event) => appendNdjson(join(options.outputDirectory, "access.ndjson"), event),
+          }),
+          options.signal,
+          options.browserPhaseTimeoutMs ?? 5 * 60_000,
+          options.abortGraceMs ?? 5_000,
+        );
         metadata.actionCounts[loaded.testCase.id] = execution.actions;
         metadata.tokenUsage[loaded.testCase.id] = execution.usage;
 
@@ -185,9 +228,10 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         if (options.signal?.aborted) {
           status = "ABORTED";
         } else {
-          result = caseError(loaded.testCase.id, error, redactor);
+          const code = error instanceof CaseDeadlineError ? error.code : "CASE_EXECUTION";
+          result = caseError(loaded.testCase.id, error, redactor, code);
           if (createCaseFailed) restartBeforeNextCase = true;
-          await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: "CASE_EXECUTION" });
+          await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code });
         }
       } finally {
         if (browser) {
