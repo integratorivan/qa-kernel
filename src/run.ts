@@ -1,7 +1,7 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { appendNdjson, atomicJson, EvidenceStore, runtimeVersions, SecretRedactor } from "./artifacts.js";
-import { BrowserController } from "./browser.js";
+import { BrowserController, type CaseBrowser } from "./browser.js";
 import { loadPack, secretsForCase, type LoadedPack } from "./pack.js";
 import { extractJsonText } from "./json-text.js";
 import { executePiCase, repairPiResult } from "./pi.js";
@@ -118,13 +118,15 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         status = "ABORTED";
         break;
       }
-      const values = secretsForCase(loaded.testCase, environment);
-      const redactor = new SecretRedactor(values.values());
-      const evidence = new EvidenceStore(options.outputDirectory, redactor);
-      const browser = await controller.createCase(evidence, loaded.testCase.id);
       const caseStartedAt = Date.now();
-      let result: CaseResult;
+      let browser: CaseBrowser | undefined;
+      let redactor = new SecretRedactor([]);
+      let result: CaseResult | undefined;
       try {
+        const values = secretsForCase(loaded.testCase, environment);
+        redactor = new SecretRedactor(values.values());
+        const evidence = new EvidenceStore(options.outputDirectory, redactor);
+        browser = await controller.createCase(evidence, loaded.testCase.id);
         const execution = await (options.caseExecutor ?? executePiCase)({
           caseId: loaded.testCase.id,
           targetUrl: environment[pack.pack.baseUrlFrom]!,
@@ -154,17 +156,24 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       } catch (error) {
         if (options.signal?.aborted) {
           status = "ABORTED";
-          break;
+        } else {
+          result = caseError(loaded.testCase.id, error, redactor);
+          await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: "CASE_EXECUTION" });
         }
-        result = caseError(loaded.testCase.id, error, redactor);
-        await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: "CASE_EXECUTION" });
       } finally {
-        await browser.close();
+        if (browser) {
+          try {
+            await browser.close();
+          } catch (error) {
+            await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_close_error", caseId: loaded.testCase.id, at: new Date().toISOString(), error: redactor.redact(error instanceof Error ? error.message : String(error)) });
+          }
+        }
         metadata.timings.cases[loaded.testCase.id] = Date.now() - caseStartedAt;
       }
+      if (status === "ABORTED") break;
+      if (!result) throw new Error(`case ${loaded.testCase.id} completed without a result`);
       results.push(result);
       await persistMeta();
-
       await persistResults(options.outputDirectory, results, status);
     }
   } catch (error) {

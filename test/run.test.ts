@@ -162,6 +162,110 @@ test("continues after CASE_ERROR and counts an intentional status mix", async ()
   expect(output.summary.exitCode).toBe(2);
 }, 30_000);
 
+test("persists a CASE_ERROR when creating one case fails and continues the pack", async () => {
+  const caseIds = ["RUN-001", "RUN-002", "RUN-003"];
+  const packDirectory = await writePack(caseIds);
+  const outputDirectory = join(temporaryDirectory, "run");
+  const controller = new BrowserController(new Set([origin]));
+  const createCase = controller.createCase.bind(controller);
+  let createAttempts = 0;
+  const executed: string[] = [];
+  controller.createCase = async (...args) => {
+    createAttempts += 1;
+    if (createAttempts === 2) throw new Error("fixture context creation failed");
+    return createCase(...args);
+  };
+
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    browserController: controller,
+    caseExecutor: async (input) => {
+      executed.push(input.caseId);
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+
+  expect(executed).toEqual(["RUN-001", "RUN-003"]);
+  expect(output.results.map((result) => result.testCaseId)).toEqual(caseIds);
+  expect(output.results[1]?.executionStatus).toBe("error");
+  expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"RUN-002"');
+}, 30_000);
+
+test("keeps a persisted verdict when case context cleanup fails", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  const controller = new BrowserController(new Set([origin]));
+  const createCase = controller.createCase.bind(controller);
+  controller.createCase = async (...args) => {
+    const browser = await createCase(...args);
+    browser.close = async () => {
+      throw new Error("fixture context close failed");
+    };
+    return browser;
+  };
+
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    browserController: controller,
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Cabinet opened", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+
+  expect(output.results[0]?.verdict).toBe("PASS");
+  expect(await readFile(join(outputDirectory, "results.json"), "utf8")).toContain('"verdict": "PASS"');
+  expect(await readFile(join(outputDirectory, "events.ndjson"), "utf8")).toContain('"case_close_error"');
+}, 30_000);
+
+test("continues after a completed BLOCKED case", async () => {
+  const caseIds = ["RUN-001", "RUN-002"];
+  const packDirectory = await writePack(caseIds);
+  const outputDirectory = join(temporaryDirectory, "run");
+  const executed: string[] = [];
+
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    caseExecutor: async (input) => {
+      executed.push(input.caseId);
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      const verdict = input.caseId === "RUN-001" ? "BLOCKED" : "PASS";
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict, blockedBy: verdict === "BLOCKED" ? "environment" : null, actual: "Fixture verdict", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+
+  expect(executed).toEqual(caseIds);
+  expect(output.results.map((result) => result.verdict)).toEqual(["BLOCKED", "PASS"]);
+}, 30_000);
+
 test("removes a sentinel secret from browser evidence and every run artifact", async () => {
   const secret = "secret-sentinel@example.test";
   const packDirectory = await writePack(["RUN-001"], "QA_SECRET");
