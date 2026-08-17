@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>qa-kernel · the evidence kernel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,400;1,8..60,500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #d2cca8;
+      --paper-2: #c8c19a;
+      --ink: #1b1810;
+      --muted: #5c5646;
+      --line: #1b1810;
+      --box: #ddd7b6;
+      --box-side: #d5cfaa;
+      --panel: #d8d2b0;
+      --hi: #1b1810;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "IBM Plex Sans Condensed", "Helvetica Neue", sans-serif;
+      overflow: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.11;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      z-index: 20;
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 52px 1fr;
+      position: relative;
+      z-index: 1;
+    }
+
+    header.top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+      overflow-x: auto;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: 1.15fr 0.95fr 1.05fr 1.2fr 1fr 1.15fr;
+      min-width: 0;
+    }
+    .stat {
+      padding: 7px 14px 6px;
+      border-right: 1px solid var(--line);
+      min-width: 0;
+    }
+    .stat .k {
+      font-size: 9px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      line-height: 1;
+    }
+    .stat .v {
+      margin-top: 5px;
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+    }
+    .controls button {
+      appearance: none;
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      font: 500 11px/1 "IBM Plex Sans Condensed", sans-serif;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .controls button[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .controls button:hover { background: rgba(27, 24, 16, 0.06); }
+    .controls button[aria-pressed="true"]:hover { background: var(--ink); }
+
+    .stage {
+      display: grid;
+      grid-template-columns: 228px 1fr 392px;
+      min-height: 0;
+    }
+
+    aside.rail {
+      border-right: 1px solid var(--line);
+      overflow: auto;
+      background: var(--paper);
+    }
+    .rail-head {
+      padding: 12px 12px 8px;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .group-label {
+      padding: 12px 12px 4px;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 10px 4px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      cursor: pointer;
+      font: 500 12px/1 "IBM Plex Sans Condensed", sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--ink);
+      width: calc(100% - 20px);
+      text-align: left;
+    }
+    .nav .code {
+      width: 22px;
+      flex: none;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0;
+    }
+    .nav.is-on {
+      background: var(--ink);
+      color: var(--paper);
+    }
+
+    .canvas-wrap {
+      position: relative;
+      min-width: 0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.08), transparent 28%),
+        var(--paper);
+      overflow: hidden;
+      cursor: grab;
+    }
+    .canvas-wrap.is-panning { cursor: grabbing; }
+    svg.scene {
+      width: 100%;
+      height: 100%;
+      display: block;
+      user-select: none;
+    }
+    .zoom {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      z-index: 2;
+    }
+    .zoom button {
+      width: 28px;
+      height: 26px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      font: 500 16px/1 "IBM Plex Sans Condensed", sans-serif;
+      cursor: pointer;
+      padding: 0;
+    }
+    .zoom button + button { border-top: 0; }
+
+    .panel {
+      border-left: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: 40px 1fr;
+      min-width: 0;
+      background: var(--panel);
+    }
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid var(--line);
+    }
+    .tabs button {
+      appearance: none;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      font: 500 11px/1 "IBM Plex Sans Condensed", sans-serif;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .tabs button:last-child { border-right: 0; }
+    .tabs button.is-on {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    article.copy {
+      overflow: auto;
+      padding: 22px 26px 48px;
+      font-family: "Source Serif 4", Georgia, serif;
+    }
+    .eyebrow {
+      font-family: "IBM Plex Sans Condensed", sans-serif;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 10px;
+    }
+    h1 {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-size: 34px;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      line-height: 0.95;
+      margin: 0 0 8px;
+    }
+    .lede {
+      font-size: 16px;
+      line-height: 1.35;
+      color: var(--ink);
+      margin: 0 0 22px;
+    }
+    h2 {
+      font-family: "IBM Plex Sans Condensed", sans-serif;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 6px;
+      margin: 22px 0 12px;
+    }
+    .copy p {
+      font-size: 15.5px;
+      line-height: 1.45;
+      margin: 0 0 14px;
+    }
+    .mark {
+      background: var(--ink);
+      color: var(--paper);
+      padding: 0 4px 1px;
+    }
+    .copy code, .meta {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+    }
+    .meta {
+      display: block;
+      color: var(--muted);
+      margin-top: -6px;
+      margin-bottom: 16px;
+    }
+    .copy ul {
+      margin: 0 0 14px;
+      padding-left: 1.1em;
+      font-size: 15.5px;
+      line-height: 1.45;
+    }
+    .copy li { margin: 0 0 6px; }
+
+    .box { cursor: pointer; }
+    .box .face { stroke: var(--line); stroke-width: 1; }
+    .box.is-dim .face { opacity: 0.38; }
+    .box.is-on .face { stroke-width: 1.8; }
+    .box-label {
+      font-family: "IBM Plex Sans Condensed", sans-serif;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      fill: var(--ink);
+      pointer-events: none;
+    }
+    .cluster-label {
+      font-family: "IBM Plex Sans Condensed", sans-serif;
+      font-size: 9px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      fill: var(--muted);
+    }
+    .edge {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      opacity: 0.55;
+    }
+    .edge.is-flow { opacity: 0.95; stroke-width: 1.2; }
+    .edge.dash { stroke-dasharray: 3 3; opacity: 0.4; }
+    .pen {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 4 3;
+      opacity: 0.45;
+    }
+    .dot { fill: var(--ink); }
+    .particle { fill: var(--ink); stroke: var(--paper); stroke-width: 1; }
+
+    @media (max-width: 1180px) {
+      .stage { grid-template-columns: 188px 1fr 300px; }
+      h1 { font-size: 28px; }
+    }
+    @media (max-width: 860px) {
+      .stage { grid-template-columns: 1fr; grid-template-rows: 220px 1fr 42vh; }
+      aside.rail { border-right: 0; border-bottom: 1px solid var(--line); }
+      .panel { border-left: 0; border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="stats">
+        <div class="stat"><div class="k">Repository</div><div class="v">qa-kernel · main</div></div>
+        <div class="stat"><div class="k">Commits</div><div class="v">30 · 1 day</div></div>
+        <div class="stat"><div class="k">Tests</div><div class="v">69 · 0 skipped</div></div>
+        <div class="stat"><div class="k">Modules</div><div class="v">18 files · 2.8k loc</div></div>
+        <div class="stat"><div class="k">Packs</div><div class="v">3 packs · 13 cases</div></div>
+        <div class="stat"><div class="k">Agent tools</div><div class="v">1 · 8 actions</div></div>
+      </div>
+      <div class="controls">
+        <button type="button" id="pause" aria-pressed="false">Pause the flow</button>
+        <button type="button" id="step">Trace one step</button>
+        <button type="button" id="reset">Reset view</button>
+      </div>
+    </header>
+
+    <div class="stage">
+      <aside class="rail" id="rail">
+        <div class="rail-head">The system</div>
+      </aside>
+
+      <div class="canvas-wrap" id="canvas">
+        <div class="zoom">
+          <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+          <button type="button" id="zoomOut" aria-label="Zoom out">−</button>
+        </div>
+        <svg class="scene" id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+
+      <section class="panel">
+        <div class="tabs">
+          <button type="button" id="tabDoes" class="is-on">What it does</button>
+          <button type="button" id="tabBuilt">How it's built</button>
+        </div>
+        <article class="copy" id="copy"></article>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const COS = Math.cos(Math.PI / 6);
+    const SIN = Math.sin(Math.PI / 6);
+    const SCALE = 36;
+
+    const OVERVIEW = {
+      kicker: "qa-kernel",
+      title: "The Evidence Kernel",
+      lede: "how a live B2B page becomes a verified money-grade verdict",
+      does: `
+        <h2>What this is</h2>
+        <p>This repository is an evidence-first AI QA kernel for non-production B2B stands — the machinery that answers <span class="mark">"does this login actually work?"</span> and <span class="mark">"is this FAIL a product bug, or just a spinner?"</span> — built so that an AI agent in Chromium, not a human clicking a UI, is the primary operator.</p>
+        <p>The heavy circuit is the case execution loop: an approved YAML case is frozen, a new BrowserContext and an isolated Pi session are opened, the model is given exactly one tool, every action is snapshotted before and after, evidence IDs are issued by the host, and the model must cite those IDs when it returns PASS, FAIL, BLOCKED or INCONCLUSIVE.</p>
+        <p>Everything rides the spine: one CLI, exactly one isolated Pi session per case, and a per-case browser context so a wrong click cannot leak into the next case. Tall cubes compute answers; flat plates are stores; stacked plates are append-only ledgers; <span class="mark">dashed outlines are planned but not switched on.</span></p>
+      `,
+      built: `
+        <h2>How the kernel is assembled</h2>
+        <p>Bun + TypeScript CLI. Playwright is the hands. The Pi SDK is the head. The host owns evidence, redaction, origins and the numbers. The model may choose a path through the UI; it may not change the goal, the oracle, the tool list or the allowlist.</p>
+        <p>Seven original modules still name the spine: <code>cli</code>, <code>schema</code>, <code>browser</code>, <code>artifacts</code>, <code>pi</code>, <code>discover</code>/<code>run</code>, <code>report</code>. Around them grew <code>pack</code>, <code>model</code>, <code>structured</code>, <code>access</code>, <code>tui</code>, <code>lab</code> and <code>dashboard</code>.</p>
+        <ul>
+          <li><code>qa discover</code> walks the stand and writes drafts. A human moves YAML from <code>drafts/</code> to <code>cases/</code>.</li>
+          <li><code>qa validate</code> checks schema, origins and <code>mutation: none</code> before Chromium starts.</li>
+          <li><code>qa run</code> executes each approved case in a fresh context and a fresh Pi session.</li>
+          <li><code>qa report</code> reads only saved <code>results.json</code>. It never calls a model.</li>
+          <li><code>qa lab</code> repeats a pack against a local fixture and scores the nights. It exists; unattended 3/3 is not proven.</li>
+        </ul>
+      `
+    };
+
+    const GROUPS = [
+      { id: "intake", label: "The intake pipeline" },
+      { id: "spine", label: "The spine" },
+      { id: "record", label: "The record" },
+      { id: "contracts", label: "The contracts" },
+      { id: "off", label: "Not switched on" }
+    ];
+
+    const NODES = [
+      {
+        id: "C", group: "intake", name: "Command line", kind: "plate", x: 6.7, z: 0.1,
+        does: `<h2>What this is</h2><p>The only public surface. Five verbs: discover, validate, run, report, lab. It parses flags, threads one AbortController through the work, and returns an exit code the host computed — never a number the model wrote.</p><p>Exit <code>0</code> means every case PASS. <code>1</code> is a product verdict other than PASS. <code>2</code> is a local CASE_ERROR or a run ERROR. <code>130</code> is a human cancel. First Ctrl+C aborts; the second does not wait.</p>`,
+        built: `<span class="meta">src/cli.ts</span><p>A 130-line argument parser. No framework, no subcommand library. SIGINT is installed once per command and disposed in <code>finally</code>. <code>qa report</code> writes both <code>report.md</code> and <code>dashboard.html</code> from the same saved results.</p>`
+      },
+      {
+        id: "T", group: "intake", name: "Operator TUI", kind: "plate", x: 11.1, z: 0.5,
+        does: `<h2>What this is</h2><p>A numbered menu over the same five verbs. It loads <code>.env</code>, can start the fixture, runs validate / discover / run / report, and moves selected YAML from drafts to cases. It is not the product UI and does not pretend to be.</p>`,
+        built: `<span class="meta">src/tui.ts</span><p>stdin loop. Required env: TARGET_URL, QA_ALLOWED_ORIGINS, QA_EMAIL, QA_PASSWORD, QA_MODEL_API_KEY. Approve is a filesystem move, which is the whole point of the gate: a human has to touch the file.</p>`
+      },
+      {
+        id: "D", group: "intake", name: "Discover", kind: "plate", x: 8.9, z: 0.1,
+        does: `<h2>What this is</h2><p>A clean Pi session walks only the mission-relevant area of the stand and proposes 2–3 grounded drafts. Unseen capability is not written down. A draft is <code>ready</code> only if a click, fill or press actually succeeded; <code>needsCapability</code> only if a visible control could not be operated after a fresh snapshot.</p>`,
+        built: `<span class="meta">src/discover.ts · src/contracts.ts</span><p>Same browser tool as run. Host serializes the structured result to YAML; the model never gets filesystem tools. One schema-constrained repair is allowed, without browser tools. Writes <code>product-map.yaml</code> and <code>.qa/discoveries/&lt;id&gt;</code>.</p>`
+      },
+      {
+        id: "V", group: "intake", name: "Validate", kind: "plate", x: 6.7, z: 2.3,
+        does: `<h2>What this is</h2><p>The gate before Chromium. Pack shape, case shape, allowed secret refs, allowed origins, and the only accepted safety value: <code>mutation: none</code>. It does not understand the business. It refuses a pack that would let the model wander or write.</p>`,
+        built: `<span class="meta">src/schema.ts · src/pack.ts</span><p>Exact-key objects. Unknown fields are errors. Case <code>data</code> keys must end in <code>From</code> and name an allowlisted env ref. Origins come from env, not from the YAML.</p>`
+      },
+      {
+        id: "P", group: "intake", name: "Pack store", kind: "plate", x: 8.9, z: 2.3,
+        does: `<h2>What this is</h2><p>The unit of work. A pack is a folder: <code>pack.yaml</code>, <code>drafts/</code>, <code>cases/</code>. Approved cases are the only ones <code>qa run</code> will touch. At run start they are copied into the run directory so later edits cannot rewrite history.</p>`,
+        built: `<span class="meta">src/pack.ts · packs/*</span><p>Three packs live in the repo: <code>fixture-smoke</code> (known PASS + known FAIL), <code>b2b-login</code>, <code>lab-smoke</code> (ten cabinet/catalog cases plus expected verdicts). <code>loadPack</code> can skip the cases requirement for discover.</p>`
+      },
+      {
+        id: "H", group: "intake", name: "Human approve", kind: "plate", x: 11.1, z: 2.7,
+        does: `<h2>What this is</h2><p>The only approval in the system. Moving a draft YAML into <code>cases/</code> means: I agree to run this goal and this oracle. It is not a guarantee that the oracle is wise. The model cannot approve itself.</p>`,
+        built: `<span class="meta">src/tui.ts · approveDraft()</span><p>A rename. No signature, no database row. The emptiness is the design: if approve needed a service, the kernel would already be a product.</p>`
+      },
+      {
+        id: "FX", group: "intake", name: "Fixture stand", kind: "plate", x: 11.1, z: 5.35,
+        does: `<h2>What this is</h2><p>A local non-production stand the kernel can hurt without consequence. The smoke pack's known PASS is a valid sign-in. The known FAIL is <code>/api/reports = 500</code>. Lab boots a second fixture on :3200 with a cabinet and a catalog.</p>`,
+        built: `<span class="meta">fixtures/b2b-fixture.ts · fixtures/lab-apps.ts</span><p>Plain Bun servers. They exist so snapshot priority, WineLab-style header icons, slow XHR and sentinel secrets can be proven without a real customer stand.</p>`
+      },
+
+      {
+        id: "R", group: "spine", name: "Run loop", kind: "cube", x: 4.4, z: 5.35,
+        does: `<h2>What this is</h2><p>The heavy circuit. One Chromium for the pack. For each approved case: new BrowserContext, new Pi session, frozen goal / steps / oracle, then a structured verdict. A local CASE_ERROR does not stop the pack. A dead browser is restarted before the next case; a failed restart becomes a run ERROR and the remaining cases are recorded as recovery errors.</p>`,
+        built: `<span class="meta">src/run.ts</span><p>Deadlines wrap launch, each case and repair. Results are atomically rewritten after every case. <code>createCase</code> sits inside the case try so a closed target becomes a local error instead of killing the night. Meta records provider, model, routing, timings, action counts and token usage — none of which may change a product verdict.</p>`
+      },
+      {
+        id: "PI", group: "spine", name: "Pi session", kind: "cube", x: 6.55, z: 5.35,
+        does: `<h2>What this is</h2><p>The head. An isolated coding-agent session whose only tool is <code>browser</code>. No filesystem, no shell, no ~/.pi, no skills, no saved sessions, no model fallback. If the pinned model is missing, that is a configuration error, not a surprise substitute.</p>`,
+        built: `<span class="meta">src/pi.ts</span><p>Pi SDK <code>0.84.2</code>, in-memory settings, empty resource loader. Isolation is probed before trust. On action/time/no-progress limit the session is stripped of browser tools and given one tool-free finalization turn. Repair is a second, browser-less structured completion.</p>`
+      },
+      {
+        id: "B", group: "spine", name: "Browser hands", kind: "cube", x: 8.7, z: 5.35,
+        does: `<h2>What this is</h2><p>The hands. Eight actions: open, snapshot, click, fill, press, scroll, screenshot, close. CSS and XPath are never given to the model. Refs belong to one snapshot and die on navigation, DOM change or scroll. Secrets enter only as <code>fill({ from: "QA_PASSWORD" })</code> — the host reads the env key at the last moment.</p>`,
+        built: `<span class="meta">src/browser.ts</span><p>Playwright Chromium. Session-long network ledger. Action path: before snapshot → watermark → act → eligible requests in a 1500 ms window → settle ≤ 8000 ms → 300 ms DOM quiet → after snapshot. Analytics, prefetch and long-poll do not hold the action. Snapshot cap is 60 interactive targets; repeating tables contribute at most 20.</p>`
+      },
+      {
+        id: "G", group: "spine", name: "Action guard", kind: "plate", x: 6.55, z: 7.55,
+        does: `<h2>What this is</h2><p>The brake. 25 browser actions per case, five minutes per case, three identical observations in a row. Identical means same URL, visible text, interactive set and network progress. The model is then expected to return BLOCKED or INCONCLUSIVE, not to keep clicking.</p>`,
+        built: `<span class="meta">src/pi.ts · BrowserActionGuard</span><p>Fingerprints the observation plus a network-progress token from the browser. A stuck <code>session.prompt</code> is the remaining unattended hole: the time limit tries to finalize, and lab has already shown that this is not yet a guarantee.</p>`
+      },
+      {
+        id: "EV", group: "spine", name: "Evidence store", kind: "stack", x: 4.4, z: 7.55,
+        does: `<h2>What this is</h2><p>The host issues IDs. A claim that cites an ID from another case, another step, or an invented token is invalid. Screenshots, snapshots and safe network facts are hashed and written before the ID exists. The model may only choose among IDs it has been given.</p>`,
+        built: `<span class="meta">src/artifacts.ts · EvidenceStore</span><p>Append-only. Atomic JSON via temp file + rename. SecretRedactor runs before any bytes hit disk. The final evidence manifest is built lazily so a late screenshot failure cannot un-issue an earlier ID. Kind directories: <code>screenshots/</code>, <code>snapshots/</code>, <code>network/</code>.</p>`
+      },
+      {
+        id: "S", group: "spine", name: "Structured out", kind: "plate", x: 8.7, z: 7.55,
+        does: `<h2>What this is</h2><p>The model does not get to invent a result shape. Discover and run both demand one JSON object that matches a host schema. If the first answer is invalid, the host asks once more — without browser tools. A second failure is a local CASE_ERROR, and the next case still runs.</p>`,
+        built: `<span class="meta">src/structured.ts · src/contracts.ts · src/json-text.ts</span><p>OpenRouter and Anthropic have separate extractors. OpenRouter requests pin the upstream, disable fallback providers, and require every requested parameter to be supported. <code>extractJsonText</code> pulls the object out of prose if the model wraps it.</p>`
+      },
+      {
+        id: "M", group: "spine", name: "Model pin", kind: "plate", x: 11.1, z: 7.55,
+        does: `<h2>What this is</h2><p>The kernel does not shop for a model mid-run. Default is OpenRouter GLM 5.2. Direct Anthropic Opus 4.8 is also allowlisted. Anything else is a configuration error. The pair is written into <code>meta.json</code> so a later reader knows which head produced the verdict.</p>`,
+        built: `<span class="meta">src/model.ts</span><p><code>PINNED_MODELS</code> is a closed map. OpenRouter routing is pinned to <code>z-ai</code> or <code>anthropic</code> and refuses fallback. There is no "whatever is cheapest tonight" path.</p>`
+      },
+
+      {
+        id: "AR", group: "record", name: "Run artifacts", kind: "stack", x: 4.4, z: 9.7,
+        does: `<h2>What this is</h2><p>What a night leaves behind. <code>.qa/runs/&lt;id&gt;</code> holds meta, copied cases, events, evidence, network, screenshots, snapshots, <code>results.json</code>, <code>report.md</code> and <code>dashboard.html</code>. Query strings, headers, bodies and resolved secrets are not in there.</p>`,
+        built: `<span class="meta">.qa/runs · src/artifacts.ts</span><p>NDJSON is appended after every event. JSON is rewritten atomically. <code>.qa/</code> is gitignored. A crash mid-case should still leave every finished case readable.</p>`
+      },
+      {
+        id: "AX", group: "record", name: "Access trail", kind: "plate", x: 6.55, z: 9.7,
+        does: `<h2>What this is</h2><p>Every browser action is a line: when, which case, which step, which ref, which URL, action status, observation status, screenshot id. This is how a human walks a FAIL back to the click that produced it.</p>`,
+        built: `<span class="meta">src/access.ts · access.ndjson</span><p>Written from the Pi tool wrapper, not from Playwright internals. Also echoed as <code>qa access:</code> on stderr so a live run is watchable without opening files.</p>`
+      },
+      {
+        id: "RP", group: "record", name: "Report", kind: "plate", x: 8.7, z: 9.7,
+        does: `<h2>What this is</h2><p>Mechanical markdown. PASS / FAIL / BLOCKED / INCONCLUSIVE / CASE_ERROR are counted from saved results. The model's prose is quoted, never re-interpreted. Report does not call a model.</p>`,
+        built: `<span class="meta">src/report.ts</span><p><code>summarize()</code> is the only source of the headline numbers. Used by run, report, lab and the dashboard so the four surfaces cannot disagree.</p>`
+      },
+      {
+        id: "DB", group: "record", name: "Dashboard", kind: "plate", x: 11.1, z: 9.7,
+        does: `<h2>What this is</h2><p>A per-run HTML file: each case, its claims, the access trail, the screenshots, and a note box to paste back into a chat. It is an artifact, not a product. Copy from <code>file://</code> still has no fallback.</p>`,
+        built: `<span class="meta">src/dashboard.ts</span><p>String-built HTML, no bundler. Written beside <code>report.md</code> at the end of run, report and lab.</p>`
+      },
+      {
+        id: "LB", group: "record", name: "Lab", kind: "cube", x: 11.1, z: 11.85,
+        does: `<h2>What this is</h2><p>Unattended repeats against a local fixture, then a scorecard: did every planned case persist, did the verdict match the expected oracle, is the night stable. Lab already finds real kernel bugs. It is not yet an honest 3/3 unattended machine.</p>`,
+        built: `<span class="meta">src/lab.ts · packs/lab-smoke · plan-2.md</span><p>Boots <code>lab-apps</code> on :3200, runs the pack N times, scores against <code>lab.yaml</code>. Last observed lab-smoke: 32 persisted results out of 50, not stable. That is a diagnostic, not a ship gate.</p>`
+      },
+
+      {
+        id: "CS", group: "contracts", name: "Case schema", kind: "cube", x: 0.1, z: 0.1,
+        does: `<h2>What this is</h2><p>A case is a frozen contract: id, title, goal, preconditions, data refs, steps, oracle, safety. Steps are instructions, not selectors. The model may take another path through the UI. It may not enlarge the goal or rewrite the oracle.</p>`,
+        built: `<span class="meta">src/schema.ts · validateCase()</span><p>Exact keys. Step IDs unique. <code>data.*From</code> must name an allowlisted secret. Oracle source is one of product-requirement, user-approved, qa-heuristic, baseline, inferred.</p>`
+      },
+      {
+        id: "VD", group: "contracts", name: "Verdict", kind: "cube", x: 2.3, z: 0.2,
+        does: `<h2>What this is</h2><p>Four product answers and one local failure. PASS is evidence of the expected. FAIL is a concrete oracle break. BLOCKED needs a cause (capability, credentials, environment, safety, product). INCONCLUSIVE needs a review reason. CASE_ERROR means the case did not finish — verdict is null, and it is not a product FAIL.</p>`,
+        built: `<span class="meta">src/schema.ts · src/report.ts</span><p>Host does not re-derive the verdict from mini-criteria. It checks evidence IDs, case/step ownership, required fields and hash. Counts come from saved results, not from prose.</p>`
+      },
+      {
+        id: "PK", group: "contracts", name: "Pack schema", kind: "plate", x: 0.1, z: 2.3,
+        does: `<h2>What this is</h2><p>The pack names itself and points at env keys for the base URL, the origin allowlist and the secrets the model is allowed to mention. The pack does not contain a URL and does not contain a password.</p>`,
+        built: `<span class="meta">src/schema.ts · validatePack()</span><p><code>schemaVersion</code>, <code>id</code>, <code>name</code>, <code>baseUrlFrom</code>, <code>allowedOriginsFrom</code>, <code>allowedSecretRefs</code>. Nothing else is legal.</p>`
+      },
+      {
+        id: "OR", group: "contracts", name: "Oracle", kind: "plate", x: 2.3, z: 2.3,
+        does: `<h2>What this is</h2><p>Expect / reject, plus a source. Current site behaviour is not automatically the expected. <code>inferred</code> is allowed only when the draft is honest that the model is guessing. The host does not score the oracle for wisdom — a human does that at approve time.</p>`,
+        built: `<span class="meta">src/schema.ts · case.oracle</span><p>Plain string arrays. No confirmed/refuted/not-observed state machine in this kernel. That was a deliberate MVP cut.</p>`
+      },
+      {
+        id: "SF", group: "contracts", name: "Safety gate", kind: "plate", x: 0.1, z: 4.5,
+        does: `<h2>What this is</h2><p>Three locks. Origins must be explicitly allowlisted. Mutation must be <code>none</code>. Secrets never travel as <code>value</code> — only as a named env key, resolved inside the host, redacted everywhere else. Page content cannot change tools, oracle, origins or env refs.</p>`,
+        built: `<span class="meta">src/schema.ts · src/browser.ts · src/artifacts.ts · src/pi.ts</span><p>Origin check on <code>open</code>. Sentinel scan rejects a fill that already contains a known secret. Redactor runs on tool results, events, snapshots, reports and console. Isolation probe proves builtin tools are off.</p>`
+      },
+      {
+        id: "OB", group: "contracts", name: "Observation", kind: "plate", x: 2.3, z: 4.5,
+        does: `<h2>What this is</h2><p>What the model is allowed to see: URL, visible text, a compact ARIA sketch, and at most 60 named interactive targets. A WineLab-style search icon next to a column header gets a ref. A hundred clickable table cells do not. If the cap is hit, the snapshot says so — it does not silently drop the rest.</p>`,
+        built: `<span class="meta">src/browser.ts · Observation</span><p>Priority: named semantic controls, then labelled inputs, then icon-controls with nearby header text. Refs are per-snapshot. Scroll always returns a fresh Observation. Screenshot pixels with credentials are redacted.</p>`
+      },
+
+      {
+        id: "RE", group: "off", name: "Replay", kind: "dash", x: 0.15, z: 8.85,
+        does: `<h2>What this is</h2><p>A future verb: replay a stable semantic case without asking the model to rediscover the path. Not in the tree. PLAN.md lists it after Definition of Done.</p>`,
+        built: `<span class="meta">not in src/</span><p>Would need a recorded semantic path that is not a CSS selector. Heal, next door, is the proposed patch against that replay target.</p>`
+      },
+      {
+        id: "HL", group: "off", name: "Heal", kind: "dash", x: 2.2, z: 9.05,
+        does: `<h2>What this is</h2><p>A future verb: propose a patch to a case that drifted, then prove it on replay. Not switched on. Building it before the kernel is honest on one stand would hide the real failures.</p>`,
+        built: `<span class="meta">not in src/</span><p>After-MVP item 2 in PLAN.md. Depends on replay.</p>`
+      },
+      {
+        id: "MU", group: "off", name: "Mutations", kind: "dash", x: 0.15, z: 11.05,
+        does: `<h2>What this is</h2><p>Writes. Creates, edits, deletes, clean-up contracts. The kernel currently refuses anything other than <code>mutation: none</code>. This box is here so the refusal is visible.</p>`,
+        built: `<span class="meta">rejected by validate</span><p>A later kernel would need an explicit cleanup contract and a non-production-only lock even stricter than today's origin allowlist.</p>`
+      },
+      {
+        id: "UI", group: "off", name: "Product UI", kind: "dash", x: 2.2, z: 11.25,
+        does: `<h2>What this is</h2><p>JokerQA, projects, ACL, issues, SSE. Deliberately absent. The dashboard is an HTML file next to the screenshots. The TUI says so on every screen. If this box lights up before the lab is honest, the kernel has become a website.</p>`,
+        built: `<span class="meta">out of scope · PLAN.md §19</span><p>Definition of Done forbids UI, DB, SSE, OMP, replay and mutation complexity in the MVP repository.</p>`
+      }
+    ];
+
+    const EDGES = [
+      ["C", "V"], ["V", "P"], ["P", "R"], ["R", "PI"], ["PI", "B"],
+      ["B", "EV"], ["EV", "AR"], ["AR", "RP"], ["S", "VD"], ["PI", "S"],
+      ["T", "C"], ["C", "D"], ["D", "P"], ["H", "P"], ["FX", "B"],
+      ["B", "G"], ["M", "PI"], ["AR", "AX"], ["AR", "DB"], ["LB", "R"],
+      ["P", "CS"], ["OR", "S"], ["OB", "B"], ["SF", "B"]
+    ];
+
+    const FLOW = ["C", "V", "P", "R", "PI", "B", "EV", "S", "VD", "AR", "RP"];
+
+    const CLUSTERS = [
+      { label: "The contracts", x: -2.15, z: 2.15 },
+      { label: "The intake pipeline", x: 8.6, z: -0.95 },
+      { label: "The spine", x: 3.35, z: 4.15 },
+      { label: "The record", x: 4.15, z: 12.45 },
+      { label: "Not switched on", x: -0.35, z: 8.05 }
+    ];
+
+    function iso(x, y, z) {
+      return { x: (x - z) * COS * SCALE, y: (x + z) * SIN * SCALE - y * SCALE };
+    }
+
+    function nodeById(id) {
+      return NODES.find((node) => node.id === id);
+    }
+
+    function sizeOf(node) {
+      const w = 1.42;
+      const d = 1.42;
+      if (node.kind === "cube") return { w, d, h: 1.28 };
+      if (node.kind === "stack") return { w, d, h: 0.86, layers: 5 };
+      return { w, d, h: 0.26 };
+    }
+
+    function topCenter(node) {
+      const { w, d, h } = sizeOf(node);
+      return iso(node.x + w / 2, h + 0.02, node.z + d / 2);
+    }
+
+    function groundCenter(node) {
+      const { w, d } = sizeOf(node);
+      return iso(node.x + w / 2, 0.04, node.z + d / 2);
+    }
+
+    function face(points) {
+      return points.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ") + " Z";
+    }
+
+    function boxFaces(x, y, z, w, d, h) {
+      const p = (xx, yy, zz) => iso(xx, yy, zz);
+      const top = [p(x, y + h, z), p(x + w, y + h, z), p(x + w, y + h, z + d), p(x, y + h, z + d)];
+      const left = [p(x, y + h, z + d), p(x + w, y + h, z + d), p(x + w, y, z + d), p(x, y, z + d)];
+      const right = [p(x + w, y + h, z), p(x + w, y + h, z + d), p(x + w, y, z + d), p(x + w, y, z)];
+      return { top, left, right };
+    }
+
+    function route(a, b) {
+      const from = nodeById(a);
+      const to = nodeById(b);
+      const fa = sizeOf(from);
+      const fb = sizeOf(to);
+      const start = { x: from.x + fa.w / 2, y: fa.h, z: from.z + fa.d / 2 };
+      const end = { x: to.x + fb.w / 2, y: fb.h, z: to.z + fb.d / 2 };
+      const street = 0.27;
+      const dx = Math.abs(end.x - start.x);
+      const dz = Math.abs(end.z - start.z);
+      if (dx < 0.35) {
+        return [start, { x: start.x, y: street, z: start.z }, { x: end.x, y: street, z: end.z }, end];
+      }
+      if (dz < 0.35) {
+        return [start, { x: start.x, y: street, z: start.z }, { x: end.x, y: street, z: end.z }, end];
+      }
+      return [
+        start,
+        { x: start.x, y: street, z: start.z },
+        { x: start.x, y: street, z: end.z },
+        { x: end.x, y: street, z: end.z },
+        end
+      ];
+    }
+
+    const state = {
+      selected: null,
+      tab: "does",
+      paused: false,
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      step: 0,
+      flowT: 0
+    };
+
+    const svg = document.getElementById("svg");
+    const rail = document.getElementById("rail");
+    const copy = document.getElementById("copy");
+    const canvas = document.getElementById("canvas");
+
+    function renderRail() {
+      const head = rail.querySelector(".rail-head");
+      rail.innerHTML = "";
+      rail.appendChild(head);
+      for (const group of GROUPS) {
+        const label = document.createElement("div");
+        label.className = "group-label";
+        label.textContent = group.label;
+        rail.appendChild(label);
+        for (const node of NODES.filter((item) => item.group === group.id)) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "nav" + (state.selected === node.id ? " is-on" : "");
+          button.dataset.id = node.id;
+          button.innerHTML = `<span class="code">${node.id}</span><span>${node.name}</span>`;
+          button.addEventListener("click", () => select(node.id));
+          rail.appendChild(button);
+          if (state.selected === node.id) button.scrollIntoView({ block: "nearest" });
+        }
+      }
+    }
+
+    function mark(html) {
+      return html;
+    }
+
+    function renderCopy() {
+      const node = state.selected ? nodeById(state.selected) : null;
+      if (!node) {
+        copy.innerHTML = `
+          <p class="eyebrow">${OVERVIEW.kicker}</p>
+          <h1>${OVERVIEW.title}</h1>
+          <p class="lede">${OVERVIEW.lede}</p>
+          ${state.tab === "does" ? OVERVIEW.does : OVERVIEW.built}
+        `;
+        return;
+      }
+      copy.innerHTML = `
+        <p class="eyebrow">${node.id} · ${GROUPS.find((group) => group.id === node.group)?.label ?? "not switched on"}</p>
+        <h1>${node.name}</h1>
+        <p class="lede">${node.kind === "cube" ? "computes" : node.kind === "stack" ? "append-only ledger" : node.kind === "dash" ? "built in the plan, not in the tree" : "store"}</p>
+        ${state.tab === "does" ? mark(node.does) : mark(node.built)}
+      `;
+    }
+
+    function select(id) {
+      state.selected = state.selected === id ? null : id;
+      if (id) {
+        const index = FLOW.indexOf(id);
+        if (index >= 0) state.step = index;
+      }
+      renderRail();
+      renderCopy();
+      paintSelection();
+    }
+
+    function ns(name) {
+      return document.createElementNS("http://www.w3.org/2000/svg", name);
+    }
+
+    function addDefs(root) {
+      const defs = ns("defs");
+      defs.innerHTML = `
+        <pattern id="hatchTop" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(30)">
+          <rect width="8" height="8" fill="#e4debf" />
+          <line x1="0" y1="0" x2="0" y2="8" stroke="#1b1810" stroke-width="0.45" opacity="0.28" />
+        </pattern>
+        <pattern id="hatchLeft" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(60)">
+          <rect width="7" height="7" fill="#cfc8a0" />
+          <line x1="0" y1="0" x2="0" y2="7" stroke="#1b1810" stroke-width="0.4" opacity="0.26" />
+        </pattern>
+        <pattern id="hatchRight" width="7.5" height="7.5" patternUnits="userSpaceOnUse" patternTransform="rotate(-15)">
+          <rect width="7.5" height="7.5" fill="#d8d1ad" />
+          <line x1="0" y1="0" x2="0" y2="7.5" stroke="#1b1810" stroke-width="0.4" opacity="0.22" />
+        </pattern>
+        <pattern id="hatchOn" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(30)">
+          <rect width="7" height="7" fill="#1b1810" />
+          <line x1="0" y1="0" x2="0" y2="7" stroke="#d2cca8" stroke-width="0.5" opacity="0.55" />
+        </pattern>
+        <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto">
+          <path d="M0,1.4 L8,4 L0,6.6 Z" fill="#1b1810" />
+        </marker>
+      `;
+      root.appendChild(defs);
+    }
+
+    function drawPlate(parent, node, x, y, z, w, d, h, label) {
+      const faces = boxFaces(x, y, z, w, d, h);
+      const g = ns("g");
+      g.classList.add("box");
+      g.dataset.id = node.id;
+      const dashed = node.kind === "dash";
+      const make = (pts, fill) => {
+        const path = ns("path");
+        path.setAttribute("d", face(pts));
+        path.setAttribute("class", "face");
+        path.setAttribute("fill", dashed ? "rgba(210,204,168,0.12)" : fill);
+        path.style.pointerEvents = "all";
+        if (dashed) path.setAttribute("stroke-dasharray", "3 2.4");
+        g.appendChild(path);
+      };
+      make(faces.left, "url(#hatchLeft)");
+      make(faces.right, "url(#hatchRight)");
+      make(faces.top, "url(#hatchTop)");
+      if (label) {
+        const c = iso(x + w / 2, y + h + 0.02, z + d / 2);
+        const text = ns("text");
+        text.setAttribute("x", c.x.toFixed(2));
+        text.setAttribute("y", (c.y + 3.5).toFixed(2));
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("class", "box-label");
+        text.textContent = label;
+        g.appendChild(text);
+      }
+      g.addEventListener("click", (event) => {
+        event.stopPropagation();
+        select(node.id);
+      });
+      parent.appendChild(g);
+      return g;
+    }
+
+    function drawNode(parent, node) {
+      const { w, d, h } = sizeOf(node);
+      if (node.kind === "stack") {
+        const wrap = ns("g");
+        wrap.classList.add("box");
+        wrap.dataset.id = node.id;
+        const layers = 5;
+        const lh = 0.13;
+        const gap = 0.07;
+        for (let i = 0; i < layers; i += 1) {
+          const y = i * (lh + gap);
+          const faces = boxFaces(node.x, y, node.z, w, d, lh);
+          for (const [pts, fill] of [[faces.left, "url(#hatchLeft)"], [faces.right, "url(#hatchRight)"], [faces.top, "url(#hatchTop)"]]) {
+            const path = ns("path");
+            path.setAttribute("d", face(pts));
+            path.setAttribute("class", "face");
+            path.setAttribute("fill", fill);
+            wrap.appendChild(path);
+          }
+        }
+        const c = iso(node.x + w / 2, layers * (lh + gap) - gap + 0.02, node.z + d / 2);
+        const text = ns("text");
+        text.setAttribute("x", c.x.toFixed(2));
+        text.setAttribute("y", (c.y + 3.5).toFixed(2));
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("class", "box-label");
+        text.textContent = node.id;
+        wrap.appendChild(text);
+        wrap.addEventListener("click", (event) => {
+          event.stopPropagation();
+          select(node.id);
+        });
+        parent.appendChild(wrap);
+        return;
+      }
+      drawPlate(parent, node, node.x, 0, node.z, w, d, h, node.id);
+    }
+
+    function drawEdge(parent, a, b, id) {
+      const points = route(a, b).map((p) => iso(p.x, p.y, p.z));
+      const path = ns("path");
+      const d = points.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ");
+      path.setAttribute("d", d);
+      path.setAttribute("class", "edge");
+      path.dataset.from = a;
+      path.dataset.to = b;
+      path.dataset.edge = id;
+      if (id === "flow") path.setAttribute("marker-end", "url(#arrow)");
+      parent.appendChild(path);
+      return path;
+    }
+
+    let world, edgeLayer, nodeLayer, particle, flowPath;
+
+    function bounds() {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const node of NODES) {
+        const { w, d, h } = sizeOf(node);
+        for (const [x, y, z] of [
+          [node.x, 0, node.z],
+          [node.x + w, h + 0.4, node.z + d],
+          [node.x + w, 0, node.z],
+          [node.x, h + 0.4, node.z + d]
+        ]) {
+          const p = iso(x, y, z);
+          minX = Math.min(minX, p.x);
+          minY = Math.min(minY, p.y);
+          maxX = Math.max(maxX, p.x);
+          maxY = Math.max(maxY, p.y);
+        }
+      }
+      return { minX: minX - 70, minY: minY - 52, maxX: maxX + 56, maxY: maxY + 48 };
+    }
+
+    function applyView() {
+      const b = bounds();
+      const cx = (b.minX + b.maxX) / 2;
+      const cy = (b.minY + b.maxY) / 2;
+      const w = (b.maxX - b.minX) / state.zoom;
+      const h = (b.maxY - b.minY) / state.zoom;
+      svg.setAttribute("viewBox", `${cx - w / 2 - state.panX} ${cy - h / 2 - state.panY} ${w} ${h}`);
+    }
+
+    function paintSelection() {
+      for (const box of svg.querySelectorAll(".box")) {
+        const on = state.selected && box.dataset.id === state.selected;
+        const dim = state.selected && box.dataset.id !== state.selected;
+        box.classList.toggle("is-on", Boolean(on));
+        box.classList.toggle("is-dim", Boolean(dim));
+        if (on) {
+          for (const faceEl of box.querySelectorAll(".face")) {
+            if (faceEl.getAttribute("fill") === "url(#hatchTop)") faceEl.setAttribute("fill", "url(#hatchOn)");
+          }
+        } else {
+          for (const faceEl of box.querySelectorAll(".face")) {
+            if (faceEl.getAttribute("fill") === "url(#hatchOn)") faceEl.setAttribute("fill", "url(#hatchTop)");
+          }
+        }
+      }
+      const flowSet = new Set();
+      for (let i = 0; i < FLOW.length - 1; i += 1) flowSet.add(`${FLOW[i]}>${FLOW[i + 1]}`);
+      for (const edge of svg.querySelectorAll(".edge")) {
+        const key = `${edge.dataset.from}>${edge.dataset.to}`;
+        edge.classList.toggle("is-flow", flowSet.has(key));
+      }
+    }
+
+    function drawScene() {
+      svg.innerHTML = "";
+      addDefs(svg);
+      world = ns("g");
+      world.setAttribute("id", "world");
+      svg.appendChild(world);
+
+      const pen = ns("path");
+      const a = iso(-0.55, 0, 8.35);
+      const b = iso(3.95, 0, 8.35);
+      const c = iso(3.95, 0, 12.85);
+      const d = iso(-0.55, 0, 12.85);
+      pen.setAttribute("d", `M${a.x},${a.y} L${b.x},${b.y} L${c.x},${c.y} L${d.x},${d.y} Z`);
+      pen.setAttribute("class", "pen");
+      world.appendChild(pen);
+
+      edgeLayer = ns("g");
+      world.appendChild(edgeLayer);
+      const flowPair = new Set();
+      for (let i = 0; i < FLOW.length - 1; i += 1) flowPair.add(`${FLOW[i]}>${FLOW[i + 1]}`);
+      for (const [from, to] of EDGES) {
+        if (flowPair.has(`${from}>${to}`)) continue;
+        drawEdge(edgeLayer, from, to, `${from}-${to}`);
+      }
+
+      const flowPoints = [];
+      for (let i = 0; i < FLOW.length - 1; i += 1) {
+        const pts = route(FLOW[i], FLOW[i + 1]);
+        if (i > 0) pts.shift();
+        flowPoints.push(...pts);
+      }
+      flowPath = ns("path");
+      flowPath.setAttribute("d", flowPoints.map((p, i) => {
+        const s = iso(p.x, p.y, p.z);
+        return `${i ? "L" : "M"}${s.x.toFixed(2)},${s.y.toFixed(2)}`;
+      }).join(" "));
+      flowPath.setAttribute("class", "edge is-flow");
+      flowPath.setAttribute("marker-end", "url(#arrow)");
+      flowPath.setAttribute("id", "flowline");
+      edgeLayer.appendChild(flowPath);
+      for (const point of flowPoints) {
+        const s = iso(point.x, point.y, point.z);
+        const dot = ns("circle");
+        dot.setAttribute("cx", s.x.toFixed(2));
+        dot.setAttribute("cy", s.y.toFixed(2));
+        dot.setAttribute("r", "1.6");
+        dot.setAttribute("class", "dot");
+        edgeLayer.appendChild(dot);
+      }
+
+      nodeLayer = ns("g");
+      world.appendChild(nodeLayer);
+      const ordered = [...NODES].sort((a, b) => (a.x + a.z) - (b.x + b.z));
+      for (const node of ordered) drawNode(nodeLayer, node);
+
+      for (const cluster of CLUSTERS) {
+        const p = iso(cluster.x, 0.04, cluster.z);
+        const text = ns("text");
+        text.setAttribute("x", p.x.toFixed(2));
+        text.setAttribute("y", p.y.toFixed(2));
+        text.setAttribute("class", "cluster-label");
+        text.textContent = cluster.label;
+        world.appendChild(text);
+      }
+
+      particle = ns("rect");
+      particle.setAttribute("class", "particle");
+      particle.setAttribute("width", "7");
+      particle.setAttribute("height", "7");
+      world.appendChild(particle);
+
+      svg.addEventListener("click", () => {
+        if (state.selected) select(state.selected);
+      });
+
+      applyView();
+      paintSelection();
+    }
+
+    function placeParticle(t) {
+      if (!flowPath) return;
+      const length = flowPath.getTotalLength();
+      const p = flowPath.getPointAtLength((t % 1) * length);
+      particle.setAttribute("x", (p.x - 3.5).toFixed(2));
+      particle.setAttribute("y", (p.y - 3.5).toFixed(2));
+    }
+
+    let last = performance.now();
+    function tick(now) {
+      const dt = Math.min(40, now - last);
+      last = now;
+      if (!state.paused) {
+        state.flowT = (state.flowT + dt / 18000) % 1;
+        placeParticle(state.flowT);
+        const index = Math.floor(state.flowT * FLOW.length) % FLOW.length;
+        if (!state.selected && index !== state.step) state.step = index;
+      }
+      requestAnimationFrame(tick);
+    }
+
+    function stepOnce() {
+      state.paused = true;
+      document.getElementById("pause").ariaPressed = "true";
+      document.getElementById("pause").textContent = "Resume the flow";
+      state.step = (state.step + 1) % FLOW.length;
+      state.flowT = state.step / FLOW.length;
+      placeParticle(state.flowT);
+      state.selected = FLOW[state.step];
+      renderRail();
+      renderCopy();
+      paintSelection();
+    }
+
+    function resetView() {
+      state.zoom = 1;
+      state.panX = 0;
+      state.panY = 0;
+      state.selected = null;
+      state.paused = false;
+      state.step = 0;
+      state.flowT = 0;
+      document.getElementById("pause").ariaPressed = "false";
+      document.getElementById("pause").textContent = "Pause the flow";
+      applyView();
+      renderRail();
+      renderCopy();
+      paintSelection();
+    }
+
+    document.getElementById("pause").addEventListener("click", () => {
+      state.paused = !state.paused;
+      document.getElementById("pause").ariaPressed = String(state.paused);
+      document.getElementById("pause").textContent = state.paused ? "Resume the flow" : "Pause the flow";
+    });
+    document.getElementById("step").addEventListener("click", stepOnce);
+    document.getElementById("reset").addEventListener("click", resetView);
+    document.getElementById("zoomIn").addEventListener("click", () => {
+      state.zoom = Math.min(2.4, state.zoom * 1.18);
+      applyView();
+    });
+    document.getElementById("zoomOut").addEventListener("click", () => {
+      state.zoom = Math.max(0.7, state.zoom / 1.18);
+      applyView();
+    });
+    document.getElementById("tabDoes").addEventListener("click", () => {
+      state.tab = "does";
+      document.getElementById("tabDoes").classList.add("is-on");
+      document.getElementById("tabBuilt").classList.remove("is-on");
+      renderCopy();
+    });
+    document.getElementById("tabBuilt").addEventListener("click", () => {
+      state.tab = "built";
+      document.getElementById("tabBuilt").classList.add("is-on");
+      document.getElementById("tabDoes").classList.remove("is-on");
+      renderCopy();
+    });
+
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.target.closest(".zoom")) return;
+      dragging = true;
+      canvas.classList.add("is-panning");
+      lastX = event.clientX;
+      lastY = event.clientY;
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      const b = bounds();
+      const rect = canvas.getBoundingClientRect();
+      const sx = (b.maxX - b.minX) / state.zoom / rect.width;
+      const sy = (b.maxY - b.minY) / state.zoom / rect.height;
+      state.panX += (event.clientX - lastX) * sx;
+      state.panY += (event.clientY - lastY) * sy;
+      lastX = event.clientX;
+      lastY = event.clientY;
+      applyView();
+    });
+    canvas.addEventListener("pointerup", () => {
+      dragging = false;
+      canvas.classList.remove("is-panning");
+    });
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
+      state.zoom = Math.min(2.4, Math.max(0.7, state.zoom * factor));
+      applyView();
+    }, { passive: false });
+
+    renderRail();
+    renderCopy();
+    drawScene();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

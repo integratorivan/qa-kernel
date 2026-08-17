@@ -1,0 +1,124 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1786895045977,
+  "projectRoot": "/Users/integratorivan/Projects/qa-kernel",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "playwright",
+        "version": "1.62.1",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "npm test",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {
+      "qa": "bun run src/cli.ts",
+      "tui": "bun run src/tui.ts",
+      "fixture": "bun run fixtures/b2b-fixture.ts",
+      "lab-apps": "bun run fixtures/lab-apps.ts",
+      "typecheck": "tsc --noEmit",
+      "test": "bun test test/*.test.ts"
+    }
+  },
+  "conventions": {
+    "namingStyle": "camelCase/PascalCase",
+    "importStyle": "ES modules",
+    "testPattern": "*.test.ts",
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "scripts",
+      "src",
+      "test"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "fixtures": {
+      "path": "fixtures",
+      "purpose": "Test fixtures",
+      "fileCount": 2,
+      "lastAccessed": 1786895045966,
+      "keyFiles": [
+        "b2b-fixture.ts",
+        "lab-apps.ts"
+      ]
+    },
+    "packs": {
+      "path": "packs",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1786895045966,
+      "keyFiles": []
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 1,
+      "lastAccessed": 1786895045968,
+      "keyFiles": [
+        "resume-lab.ts"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 17,
+      "lastAccessed": 1786895045968,
+      "keyFiles": [
+        "access.ts",
+        "artifacts.ts",
+        "browser.ts",
+        "cli.ts",
+        "contracts.ts"
+      ]
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 13,
+      "lastAccessed": 1786895045969,
+      "keyFiles": [
+        "access.test.ts",
+        "browser.test.ts",
+        "cli.test.ts",
+        "contracts.test.ts",
+        "discover.test.ts"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

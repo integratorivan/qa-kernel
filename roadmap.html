@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>qa-kernel — понятный roadmap</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;0,9..144,800;1,9..144,500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #efe6d4;
+      --paper-2: #e7dcc6;
+      --ink: #1c1610;
+      --muted: #6b6256;
+      --rule: #cbbba0;
+      --stamp: #b42318;
+      --ok: #1f6b45;
+      --now: #c45c16;
+      --later: #8a8174;
+      --card: #f7f1e4;
+      --shadow: 0 18px 50px rgba(28, 22, 16, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, rgba(196, 92, 22, 0.08), transparent 50%),
+        radial-gradient(900px 400px at 100% 0%, rgba(31, 107, 69, 0.07), transparent 45%),
+        var(--paper);
+      font-family: "Atkinson Hyperlegible", Georgia, serif;
+      font-size: 18px;
+      line-height: 1.55;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.09;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 48px 24px 96px;
+    }
+
+    header.hero {
+      display: grid;
+      gap: 18px;
+      padding-bottom: 36px;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .kicker {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--stamp);
+    }
+
+    h1 {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(42px, 7vw, 72px);
+      font-weight: 800;
+      line-height: 0.95;
+      letter-spacing: -0.03em;
+      margin: 0;
+    }
+
+    .lede {
+      max-width: 38em;
+      font-size: 21px;
+      color: #2b241c;
+    }
+
+    .now-banner {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 16px;
+      align-items: start;
+      background: #1c1610;
+      color: #f4ead8;
+      padding: 20px 22px;
+      border-radius: 4px;
+      box-shadow: var(--shadow);
+    }
+
+    .now-banner strong {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 28px;
+      display: block;
+      color: #f0b27a;
+    }
+
+    nav.toc {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 28px 0 8px;
+    }
+
+    nav.toc a {
+      text-decoration: none;
+      color: inherit;
+      background: var(--card);
+      border: 1px solid var(--rule);
+      padding: 12px 14px;
+      min-height: 72px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    nav.toc a .n {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    nav.toc a .t {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 18px;
+      line-height: 1.15;
+    }
+
+    nav.toc a.here {
+      border-color: var(--now);
+      box-shadow: inset 0 0 0 1px var(--now);
+    }
+
+    section {
+      padding: 56px 0 8px;
+      border-bottom: 1px dashed var(--rule);
+    }
+
+    section h2 {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(32px, 5vw, 46px);
+      line-height: 1.05;
+      margin: 0 0 10px;
+    }
+
+    .stage-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 16px 0 24px;
+    }
+
+    .chip {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      padding: 4px 8px;
+      border: 1px solid var(--rule);
+      background: var(--card);
+    }
+
+    .chip.now { background: #f6d9b8; border-color: var(--now); color: #7a3608; }
+    .chip.done { background: #dceadf; border-color: #8fb89d; }
+    .chip.wait { color: var(--muted); }
+
+    .grid-3, .grid-2 {
+      display: grid;
+      gap: 14px;
+    }
+
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+
+    .box {
+      background: var(--card);
+      border: 1px solid var(--rule);
+      padding: 16px 18px;
+    }
+
+    .box h3 {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin: 0 0 10px;
+      color: var(--muted);
+    }
+
+    .box ol, .box ul {
+      margin: 0;
+      padding-left: 1.15em;
+    }
+
+    .box li + li { margin-top: 6px; }
+
+    .after {
+      margin-top: 18px;
+      padding: 16px 18px;
+      background: #1c1610;
+      color: #f4ead8;
+    }
+
+    .after span {
+      display: block;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #f0b27a;
+      margin-bottom: 6px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin: 18px 0;
+    }
+
+    .flow div {
+      background: var(--card);
+      border: 1px solid var(--rule);
+      padding: 14px 12px;
+      min-height: 92px;
+    }
+
+    .flow b {
+      display: block;
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 20px;
+      margin-bottom: 6px;
+    }
+
+    .flow span { color: var(--muted); font-size: 15px; }
+
+    .truth {
+      background: #f3e2d4;
+      border-left: 4px solid var(--stamp);
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 16px;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    th {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .product {
+      background: #1c1610;
+      color: #f4ead8;
+      padding: 28px;
+      margin-top: 18px;
+    }
+
+    .product h2 { color: #f4ead8; }
+    .product p { color: #ddd2bf; }
+
+    .product .mock {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .product .row {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 12px;
+      background: #2a231b;
+      padding: 12px 14px;
+    }
+
+    .product .label {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      color: #f0b27a;
+    }
+
+    .dont {
+      background: #eadfd0;
+      padding: 16px 18px;
+    }
+
+    footer {
+      padding-top: 28px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    @media (max-width: 800px) {
+      nav.toc, .grid-3, .grid-2, .flow { grid-template-columns: 1fr; }
+      .now-banner, .product .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="kicker">qa-kernel · личный roadmap · без жаргона</div>
+      <h1>Когда что делаем<br>и что получим на выходе</h1>
+      <p class="lede">
+        Это не технический план для другой модели. Это маршрут для тебя:
+        фронтендера, который понимает продукт, браузер и QA, но не обязан
+        расшифровывать внутренние клички вроде «гейт» и «замороженный пак».
+      </p>
+      <div class="now-banner">
+        <div>
+          <strong>Сейчас</strong>
+          этап 1
+        </div>
+        <div>
+          Движок уже умеет зайти на стенд, кликать, снимать скрины и сказать PASS/FAIL.
+          Один живой логин в Atlas уже прошёл. Но ночью его ещё нельзя отпускать:
+          последний учебный прогон завис, часть кейсов потерялась, ответы прыгали.
+          Пока этап 1 не сдан — продукт строить рано. Сначала движок должен честно
+          доходить до конца без тебя за монитором.
+        </div>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="Этапы">
+      <a class="here" href="#s1"><span class="n">01 · сейчас</span><span class="t">Честный движок</span></a>
+      <a href="#s2"><span class="n">02 · после 1</span><span class="t">Твой личный UI</span></a>
+      <a href="#s3"><span class="n">03 · рядом с UI</span><span class="t">Одинаковый ответ 10 раз</span></a>
+      <a href="#s4"><span class="n">04</span><span class="t">Ночь на Atlas</span></a>
+      <a href="#s5"><span class="n">05</span><span class="t">2–3 стенда для команды</span></a>
+      <a href="#s6"><span class="n">06 · позже</span><span class="t">Крон, 10 сайтов, бэклог</span></a>
+    </nav>
+
+    <section id="now">
+      <h2>Что уже есть, одной картинкой</h2>
+      <p>Продукт в голове простой. Сейчас из этого живёт только нижняя половина — командная строка.</p>
+      <div class="flow">
+        <div><b>1. URL</b><span>Куда идти. Только не-прод.</span></div>
+        <div><b>2. Разведка</b><span>Агент гуляет и предлагает черновики кейсов.</span></div>
+        <div><b>3. Ты утверждаешь</b><span>Что именно проверять. Без тебя кейс в оценку не идёт.</span></div>
+        <div><b>4. Прогон</b><span>Chromium кликает. Скрины и сеть пишет хост, не модель.</span></div>
+        <div><b>5. Вердикт</b><span>PASS / FAIL / BLOCKED / непонятно. С доказательством.</span></div>
+      </div>
+      <div class="truth">
+        Разведка и ночной прогон — разные вещи. Ночью гоняем только то, что ты уже утвердил.
+        Иначе утром нельзя понять: сломался сайт или модель придумала новый сценарий.
+      </div>
+    </section>
+
+    <section id="s1">
+      <h2>Этап 1. Делаем движок, которому можно отойти от ноутбука</h2>
+      <div class="stage-meta">
+        <span class="chip now">ты здесь</span>
+        <span class="chip">когда: ближайшая работа</span>
+        <span class="chip">UI не строим</span>
+      </div>
+      <div class="grid-3">
+        <div class="box">
+          <h3>Что делаем</h3>
+          <ol>
+            <li>Табло перестаёт врать: пропущенный кейс = красный, а не «его как будто не было».</li>
+            <li>Упал один кейс — остальные всё равно прогоняются.</li>
+            <li>Умер Chromium — один аккуратный перезапуск, и идём дальше.</li>
+            <li>Любой зависший шаг имеет потолок по времени. Руками kill не нужен.</li>
+            <li>Скролл считается прогрессом. Доказательство привязано к нужному шагу, а не к соседнему.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Это нам даст</h3>
+          <ol>
+            <li>Прогон либо заканчивается сам, либо честно пишет «не дошёл».</li>
+            <li>Не теряются кейсы и не остаётся зомби-браузеров.</li>
+            <li>Один и тот же учебный набор из 10 кейсов три раза подряд даёт одну матрицу ответов.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Зачем это нужно</h3>
+          <p>Без этого любой красивый UI будет кнопкой «запусти лотерею». Нельзя обещать менеджеру 10/10, если движок зависает на четвёртом прогоне и теряет результаты.</p>
+        </div>
+      </div>
+      <div class="after">
+        <span>На выходе этапа</span>
+        Учебный кабинет + каталог на localhost. 10 заранее известных кейсов. Три полных прогона. 30 ответов из 30 совпали с эталоном. В том числе заранее сломанный отчёт стабильно красный. Процесс сам вышел. Браузеры не висят.
+      </div>
+    </section>
+
+    <section id="s2">
+      <h2>Этап 2. Твой личный продукт: URL → разведка → утвердить → прогон</h2>
+      <div class="stage-meta">
+        <span class="chip wait">после этапа 1</span>
+        <span class="chip">здесь ты начинаешь UI</span>
+      </div>
+      <div class="grid-3">
+        <div class="box">
+          <h3>Что делаем</h3>
+          <ol>
+            <li>Простая страница, не админка на десять ролей.</li>
+            <li>Поле «куда идти».</li>
+            <li>Кнопка «разведка» — список предложенных кейсов.</li>
+            <li>Ты галочками утверждаешь, что гонять.</li>
+            <li>Кнопка «прогнать» и отчёт со скринами.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Это нам даст</h3>
+          <ol>
+            <li>Ты больше не живёшь в терминале.</li>
+            <li>Можно посадить себя на Atlas и руками пройти цикл как пользователь.</li>
+            <li>Понятно, чего не хватает в отчёте, пока ещё никто из команды не смотрит.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Зачем это нужно</h3>
+          <p>Продукт начинается здесь, не на десятке сайтов. Сначала один человек должен спокойно проверить один стенд и понять результат за минуту.</p>
+        </div>
+      </div>
+      <div class="after">
+        <span>На выходе этапа</span>
+        Личный инструмент. Один стенд за раз. Ты видишь предложенные кейсы, утверждаешь их и получаешь отчёт. Это ещё не замена QA и не крон. Это рабочий стол для тебя.
+      </div>
+    </section>
+
+    <section id="s3">
+      <h2>Этап 3. Десять одинаковых ответов на одних и тех же кейсах</h2>
+      <div class="stage-meta">
+        <span class="chip wait">можно параллельно шлифовать UI</span>
+        <span class="chip">те же утверждённые кейсы, не новые из разведки</span>
+      </div>
+      <div class="grid-3">
+        <div class="box">
+          <h3>Что делаем</h3>
+          <ol>
+            <li>Берём набор, который ты уже утвердил. Ничего нового не подмешиваем.</li>
+            <li>Гоняем его 10 раз подряд.</li>
+            <li>Смотрим, прыгает ли вердикт.</li>
+            <li>Если прыгает — чиним причину, а не «перезапусти ещё раз».</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Это нам даст</h3>
+          <ol>
+            <li>Цифру, а не ощущение: 10/10 или «вот этот кейс врёт».</li>
+            <li>Понимание, можно ли показывать отчёт другому человеку.</li>
+            <li>Список мест, где модель ещё гадает, а не проверяет.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Зачем это нужно</h3>
+          <p>Если один и тот же логин сегодня PASS, завтра FAIL, послезавтра «заблокировано», это нельзя отдавать менеджеру. Одинаковость — цена доверия.</p>
+        </div>
+      </div>
+      <div class="after">
+        <span>На выходе этапа</span>
+        Ты можешь сказать: «на этих кейсах система отвечает одинаково». Вот тогда фраза «10 из 10» перестаёт быть пожеланием и становится фактом.
+      </div>
+    </section>
+
+    <section id="s4">
+      <h2>Этап 4. Первая настоящая ночь: учебный стенд + Atlas</h2>
+      <div class="stage-meta">
+        <span class="chip wait">после этапов 1–3</span>
+        <span class="chip">без тебя за монитором</span>
+      </div>
+      <div class="grid-3">
+        <div class="box">
+          <h3>Что делаем</h3>
+          <ol>
+            <li>Утверждаем 2–3 кейса на Atlas. Не «всё, что нашёл агент», а короткий smoke.</li>
+            <li>Ночью гоняем два стенда по очереди: локальную учебку и Atlas.</li>
+            <li>Если один упал технически — второй всё равно пробуется.</li>
+            <li>Утром один индекс: что дошло, что нет, ссылка на скрины.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Это нам даст</h3>
+          <ol>
+            <li>Доказательство, что unattended работает не только на фейковом кабинете.</li>
+            <li>Понимание, врёт ли система на живом логине так же честно, как на учебке.</li>
+            <li>Привычку читать утренний отчёт, а не логи процесса.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Зачем это нужно</h3>
+          <p>Atlas — первый реальный продукт, который ты уже трогал руками. Если ночь на нём врёт, масштабировать на 10 сайтов бессмысленно.</p>
+        </div>
+      </div>
+      <div class="after">
+        <span>На выходе этапа</span>
+        Две спокойные ночи подряд. Утром открываешь одну страницу. Учебка зелёная. Atlas либо совпал с эталоном, либо красный по понятной причине со скрином. Никто ничего не убивал руками.
+      </div>
+    </section>
+
+    <section id="s5">
+      <h2>Этап 5. Два–три стенда. Первый раз можно звать команду</h2>
+      <div class="stage-meta">
+        <span class="chip wait">после спокойных ночей на Atlas</span>
+        <span class="chip">здесь продукт для людей, не только для тебя</span>
+      </div>
+      <div class="grid-3">
+        <div class="box">
+          <h3>Что делаем</h3>
+          <ol>
+            <li>Добавляем ещё один разрешённый стенд. Короткий набор: счастливый путь, заранее сломанное, один сложный клик.</li>
+            <li>Те же 2–3 стенда гоняем две ночи.</li>
+            <li>Даём менеджеру / разработчику / синьору-тестировщику кнопку «прогнать утверждённое» и отчёт.</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Это нам даст</h3>
+          <ol>
+            <li>Первую замену ручного смоука, не всей QA-службы.</li>
+            <li>Людей, которые смотрят отчёт, а не YAML.</li>
+            <li>Понимание, каких статусов не хватает в UI: «сайт лёг», «логин протух», «это баг продукта».</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>Зачем это нужно</h3>
+          <p>Замена методичек начинается не с десяти сайтов, а с того, что другой человек без тебя прогнал смоук и поверил результату.</p>
+        </div>
+      </div>
+      <div class="after">
+        <span>На выходе этапа</span>
+        Маленький командный инструмент на 2–3 стендах. Не «AI заменил QA». А «утренний смоук больше не надо кликать руками».
+      </div>
+    </section>
+
+    <section id="s6">
+      <h2>Этап 6. Позже: крон, охота, бэклог, десятки сайтов</h2>
+      <div class="stage-meta">
+        <span class="chip wait">не раньше, чем этап 5 спокойно живёт несколько ночей</span>
+      </div>
+      <div class="grid-2">
+        <div class="box">
+          <h3>Что появится, но не сейчас</h3>
+          <ul>
+            <li><b>По расписанию.</b> Сами ночные прогоны без ручного запуска.</li>
+            <li><b>10, потом 20–30 сайтов.</b> Только разрешённые не-прод стенды. На каждый — 2–3 утверждённых кейса, не энциклопедия.</li>
+            <li><b>Охота.</b> Разведка ищет места, которые чаще всего ломаются, и предлагает новые черновики. В оценку они попадают только после твоего «да».</li>
+            <li><b>Из задачи бэклога — кейс.</b> «Сделать фильтр в отчётах» превращается в черновик проверки. Снова через утверждение.</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>Почему это не этап 2</h3>
+          <p>Крон на врущем движке шлёт ложные тревоги. Десять сайтов без одинаковых ответов — это десять лотерей. Бэклог без утверждения превращает фантазию модели в «баг». Сначала доверие на двух-трёх стендах, потом масштаб.</p>
+        </div>
+      </div>
+      <div class="after">
+        <span>На выходе всего маршрута</span>
+        Система, которой можно сказать: вот стенды, вот утверждённые проверки. Ночью она сама проходит их. Утром ты видишь, что сломалось, с доказательством. Методички по смоуку и регрессу больше не единственный способ это сделать.
+      </div>
+    </section>
+
+    <section>
+      <h2>Что можно начинать на каком этапе</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Хочу</th>
+            <th>Когда</th>
+            <th>Почему не раньше</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Чинить движок</td>
+            <td>Сейчас. Этап 1.</td>
+            <td>Именно он сейчас врёт и зависает.</td>
+          </tr>
+          <tr>
+            <td>Рисовать свой UI: URL, разведка, галочки, прогон</td>
+            <td>Сразу после этапа 1</td>
+            <td>Иначе кнопка запускает процесс, который может зависнуть и потерять кейсы.</td>
+          </tr>
+          <tr>
+            <td>Сказать «10 одинаковых ответов»</td>
+            <td>Этап 3</td>
+            <td>Пока это не измерено, это реклама.</td>
+          </tr>
+          <tr>
+            <td>Оставить Atlas на ночь</td>
+            <td>Этап 4</td>
+            <td>Сначала учебка должна трижды совпасть. Потом живой стенд.</td>
+          </tr>
+          <tr>
+            <td>Посадить менеджера / разработчика</td>
+            <td>Этап 5</td>
+            <td>Им нужен стабильный короткий смоук, не лаборатория.</td>
+          </tr>
+          <tr>
+            <td>Крон, бэклог → кейсы, 10+ сайтов</td>
+            <td>Этап 6</td>
+            <td>Это масштаб. Масштаб без доверия только ускоряет мусор.</td>
+          </tr>
+          <tr>
+            <td>Заменить всю QA-службу</td>
+            <td>Не в этом roadmap</td>
+            <td>Мы заменяем ручной смоук и часть регресса. Исследовательское, спорное и продовое — отдельно и позже.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Если я раньше говорил непонятно — вот перевод</h2>
+      <div class="grid-2">
+        <div class="box">
+          <h3>Что я говорил</h3>
+          <ul>
+            <li>«После гейта B/C»</li>
+            <li>«На замороженном паке»</li>
+            <li>«Лаба 3/3»</li>
+            <li>«Atlas две ночи»</li>
+            <li>«Oracle»</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>Что это значит по-человечески</h3>
+          <ul>
+            <li>После того как учебка стала честной, а потом после первой ночи на Atlas.</li>
+            <li>На том же наборе кейсов, который ты уже утвердил. Без новых из разведки.</li>
+            <li>10 учебных кейсов, три полных повтора, все ответы совпали.</li>
+            <li>Две ночи подряд прогнали Atlas без ручного kill, утром отчёт читаемый.</li>
+            <li>Заранее записанный правильный ответ. Например: «сломанный отчёт должен быть FAIL».</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Чего в ближайших этапах не будет</h2>
+      <div class="dont">
+        <ul>
+          <li>Не пишем в прод. Тестовый стенд — да, но и на нём не всё безобидно.</li>
+          <li>Пока не создаём, не удаляем и не отправляем наружу. Не потому что стенд «страшно трогать», а потому что запись ломает повторяемость и оставляет хвосты. Подробнее ниже. Это ограничение этапов 1–5, не навсегда.</li>
+          <li>Не подключаем локальную дешёвую модель «на всякий случай».</li>
+          <li>Не строим базу, очередь и админку на десять команд.</li>
+          <li>Не делаем так, чтобы разведка сама утверждала себе кейсы.</li>
+          <li>Не гоняем десять сайтов, пока три одинаковых прогона учебки не совпали.</li>
+        </ul>
+      </div>
+      <div class="truth">
+        Запись на тестовом стенде появится. Сначала доказываем, что десять раз подряд один и тот же просмотр даёт один ответ. Потом добавляем «создал → проверил → убрал за собой» с уникальным именем и явным шагом уборки. «Отправить рассылку / вебхук / письмо» — отдельный разговор: у staging часто живые интеграции.
+      </div>
+    </section>
+
+    <div class="product" id="product">
+      <div class="kicker" style="color:#f0b27a">итоговый продукт, когда маршрут пройден</div>
+      <h2>Утренний смоук, который не надо кликать руками</h2>
+      <p>
+        Человек открывает страницу. Видит стенды. Жмёт «прогнать утверждённое»
+        или это уже произошло ночью. Через какое-то время получает не «ИИ всё ок»,
+        а таблицу: что совпало, что сломалось, что сайт не пустил, что система сама не поняла.
+        У каждой строки есть скрин и след действий. Новый кейс появляется только
+        если человек сказал «да».
+      </p>
+      <div class="mock">
+        <div class="row">
+          <div class="label">Стенды</div>
+          <div>Учебка · Atlas · третий B2B staging</div>
+        </div>
+        <div class="row">
+          <div class="label">Проверки</div>
+          <div>Короткий утверждённый набор. Не сто кейсов. 2–3 на стенд плюс то, что команда сама добавила и утвердила.</div>
+        </div>
+        <div class="row">
+          <div class="label">Отчёт</div>
+          <div>Совпало / баг продукта / нас не пустили / система не смогла решить. Скрины. Без секретов в логах.</div>
+        </div>
+        <div class="row">
+          <div class="label">Не обещаем</div>
+          <div>Что это заменяет всю ручную QA. Обещаем, что смоук и часть регресса можно больше не методичить руками.</div>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      Файл можно просто открыть в браузере. Техническая версия с кодом и критериями по-прежнему в <code>plan-2.md</code>.
+      Если формулировка этапа разъедется с ним — верь этому файлу по смыслу, плану — по деталям реализации.
+    </footer>
+  </div>
+</body>
+</html>
