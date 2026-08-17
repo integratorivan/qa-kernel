@@ -25,6 +25,10 @@ export interface RunOptions {
   abortGraceMs?: number;
   repairTimeoutMs?: number;
   browserLaunchTimeoutMs?: number;
+  finalizationTimeoutMs?: number;
+  contextCloseTimeoutMs?: number;
+  browserCloseTimeoutMs?: number;
+  persistCheckpoint?: (write: () => Promise<void>) => Promise<void>;
 }
 
 export interface RunOutput {
@@ -81,6 +85,12 @@ function caseError(caseId: string, error: unknown, redact: SecretRedactor, code 
     reviewReason: null,
     error: { code, message: redact.redact(error instanceof Error ? error.message : String(error)) },
   };
+}
+
+function technicalErrorCode(error: unknown): string {
+  if (error instanceof CaseDeadlineError) return error.code;
+  if (error instanceof Error && /^(CASE_PHASE|CASE_TOTAL|FINALIZATION|RESULT_REPAIR|BROWSER_LAUNCH|CONTEXT_CLOSE|BROWSER_CLOSE)_TIMEOUT$/.test(error.message)) return error.message;
+  return "CASE_EXECUTION";
 }
 
 function parseModelResult(text: string): CaseResult {
@@ -143,6 +153,28 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   const results: CaseResult[] = [];
   let status: RunSummary["status"] = "COMPLETED";
   let restartBeforeNextCase = false;
+  const abortGraceMs = options.abortGraceMs ?? 5_000;
+  const browserCloseTimeoutMs = options.browserCloseTimeoutMs ?? 10_000;
+  const forceCloseController = async () => {
+    try {
+      await executeWithDeadline(async () => await controller.forceClose(), undefined, browserCloseTimeoutMs, "BROWSER_CLOSE_TIMEOUT", 0);
+    } catch (error) {
+      await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "browser_force_close_error", at: new Date().toISOString(), code: technicalErrorCode(error), error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  };
+  const closeController = async () => {
+    if (!controller.isAlive()) {
+      await forceCloseController();
+      return;
+    }
+    try {
+      await executeWithDeadline(async () => await controller.close(), undefined, browserCloseTimeoutMs, "BROWSER_CLOSE_TIMEOUT", 0);
+    } catch (error) {
+      await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "browser_close_error", at: new Date().toISOString(), code: technicalErrorCode(error), error: error instanceof Error ? error.message : String(error) });
+      await forceCloseController();
+    }
+  };
   if (!options.apiKey) {
     status = "ERROR";
     await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_MODEL_API_KEY is required for the configured QA model" });
@@ -152,7 +184,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   }
 
   try {
-    await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
+    await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", abortGraceMs);
     metadata.versions.chromium = controller.version();
     for (let caseIndex = 0; caseIndex < pack.cases.length; caseIndex += 1) {
       const loaded = pack.cases[caseIndex]!;
@@ -160,14 +192,19 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         status = "ABORTED";
         break;
       }
+      if (!restartBeforeNextCase && !controller.isAlive()) restartBeforeNextCase = true;
       if (restartBeforeNextCase) {
         try {
-          await controller.close();
-          await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", options.abortGraceMs ?? 5_000);
+          await closeController();
+          await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", abortGraceMs);
           metadata.versions.chromium = controller.version();
           restartBeforeNextCase = false;
           await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "browser_restarted", at: new Date().toISOString() });
         } catch (error) {
+          if (options.signal?.aborted) {
+            status = "ABORTED";
+            break;
+          }
           status = "ERROR";
           const restartError = new Error(`browser restart failed: ${error instanceof Error ? error.message : String(error)}`);
           for (const pending of pack.cases.slice(caseIndex)) {
@@ -181,16 +218,25 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         }
       }
       const caseStartedAt = Date.now();
+      const browserPhaseTimeoutMs = options.browserPhaseTimeoutMs ?? 5 * 60_000;
+      const browserPhaseDeadline = caseStartedAt + browserPhaseTimeoutMs;
       let browser: CaseBrowser | undefined;
       let redactor = new SecretRedactor([]);
       let result: CaseResult | undefined;
       let createCaseFailed = false;
+      let checkpointFailed = false;
       try {
         const values = secretsForCase(loaded.testCase, environment);
         redactor = new SecretRedactor(values.values());
         const evidence = new EvidenceStore(options.outputDirectory, redactor);
         try {
-          browser = await controller.createCase(evidence, loaded.testCase.id);
+          browser = await executeWithDeadline(
+            async () => await controller.createCase(evidence, loaded.testCase.id),
+            options.signal,
+            Math.max(1, browserPhaseDeadline - Date.now()),
+            "CASE_PHASE_TIMEOUT",
+            abortGraceMs,
+          );
         } catch (error) {
           createCaseFailed = true;
           throw error;
@@ -201,8 +247,11 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           (byStep[item.stepId] ??= []).push(item.id);
           return byStep;
         }, {});
+        const phaseRemainingMs = Math.max(1, browserPhaseDeadline - Date.now());
+        const finalizationTimeoutMs = options.finalizationTimeoutMs ?? 30_000;
+        const caseExecutor = options.caseExecutor ?? executePiCase;
         const execution = await executeWithDeadline(
-          (signal) => (options.caseExecutor ?? executePiCase)({
+          (signal) => caseExecutor({
             caseId: loaded.testCase.id,
             targetUrl: environment[pack.pack.baseUrlFrom]!,
             goal: loaded.testCase.goal,
@@ -216,11 +265,14 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
             modelConfiguration: options.modelConfiguration,
             onAccess: async (event) => appendNdjson(join(options.outputDirectory, "access.ndjson"), event),
             evidenceManifest,
+            browserPhaseTimeoutMs: phaseRemainingMs,
+            finalizationTimeoutMs,
+            abortGraceMs,
           }),
           options.signal,
-          options.browserPhaseTimeoutMs ?? 5 * 60_000,
-          "CASE_PHASE_TIMEOUT",
-          options.abortGraceMs ?? 5_000,
+          options.caseExecutor ? phaseRemainingMs : phaseRemainingMs + finalizationTimeoutMs + (2 * abortGraceMs) + 100,
+          options.caseExecutor ? "CASE_PHASE_TIMEOUT" : "CASE_TOTAL_TIMEOUT",
+          abortGraceMs,
         );
         metadata.actionCounts[loaded.testCase.id] = execution.actions;
         metadata.tokenUsage[loaded.testCase.id] = execution.usage;
@@ -234,7 +286,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
             options.signal,
             options.repairTimeoutMs ?? 30_000,
             "RESULT_REPAIR_TIMEOUT",
-            options.abortGraceMs ?? 5_000,
+            abortGraceMs,
           );
           result = parseModelResult(redactor.redact(repaired));
           await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
@@ -243,38 +295,69 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       } catch (error) {
         if (options.signal?.aborted) {
           status = "ABORTED";
+          metadata.timings.cases[loaded.testCase.id] = Date.now() - caseStartedAt;
+          await persistMeta();
+          await persistResults(options.outputDirectory, results, status);
         } else {
-          const code = error instanceof CaseDeadlineError ? error.code : "CASE_EXECUTION";
+          const code = technicalErrorCode(error);
           result = caseError(loaded.testCase.id, error, redactor, code);
           if (createCaseFailed) restartBeforeNextCase = true;
           await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code });
         }
       } finally {
+        if (status !== "ABORTED" && result) {
+          results.push(result);
+          const writeCheckpoint = async () => {
+            await persistMeta();
+            await persistResults(options.outputDirectory, results, status);
+          };
+          try {
+            await (options.persistCheckpoint ? options.persistCheckpoint(writeCheckpoint) : writeCheckpoint());
+          } catch (error) {
+            results[results.length - 1] = caseError(loaded.testCase.id, error, redactor, "ARTIFACT_PERSIST");
+            await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: "ARTIFACT_PERSIST" }).catch(() => {});
+            try {
+              await writeCheckpoint();
+            } catch (retryError) {
+              status = "ERROR";
+              checkpointFailed = true;
+              await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), code: "ARTIFACT_PERSIST", error: retryError instanceof Error ? retryError.message : String(retryError) }).catch(() => {});
+            }
+          }
+        }
         if (browser) {
           try {
-            await browser.close();
+            await executeWithDeadline(async () => await browser!.close(), undefined, options.contextCloseTimeoutMs ?? 10_000, "CONTEXT_CLOSE_TIMEOUT", 0);
           } catch (error) {
-            await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_close_error", caseId: loaded.testCase.id, at: new Date().toISOString(), error: redactor.redact(error instanceof Error ? error.message : String(error)) });
+            restartBeforeNextCase = true;
+            await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_close_error", caseId: loaded.testCase.id, at: new Date().toISOString(), code: technicalErrorCode(error), error: redactor.redact(error instanceof Error ? error.message : String(error)) });
           }
         }
         metadata.timings.cases[loaded.testCase.id] = Date.now() - caseStartedAt;
       }
       if (status === "ABORTED") break;
       if (!result) throw new Error(`case ${loaded.testCase.id} completed without a result`);
-      results.push(result);
-      await persistMeta();
-      await persistResults(options.outputDirectory, results, status);
+      if (checkpointFailed) break;
     }
   } catch (error) {
     if (options.signal?.aborted) status = "ABORTED";
     else {
       status = "ERROR";
-      await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
+      await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), code: technicalErrorCode(error), error: error instanceof Error ? error.message : String(error) });
     }
   } finally {
-    await controller.close();
+    try {
+      await closeController();
+    } catch (error) {
+      if (!options.signal?.aborted) status = "ERROR";
+      await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), code: "BROWSER_CLEANUP", error: error instanceof Error ? error.message : String(error) }).catch(() => {});
+    }
   }
-  await persistMeta();
-  const summary = await persistResults(options.outputDirectory, results, status);
-  return { results, summary };
+  while (true) {
+    const abortedBeforePersist = Boolean(options.signal?.aborted);
+    if (abortedBeforePersist) status = "ABORTED";
+    await persistMeta();
+    const summary = await persistResults(options.outputDirectory, results, status);
+    if (Boolean(options.signal?.aborted) === abortedBeforePersist) return { results, summary };
+  }
 }

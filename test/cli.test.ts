@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
-import { main } from "../src/cli.js";
+import { interruptController, main } from "../src/cli.js";
 import { loadPack } from "../src/pack.js";
 
 
@@ -57,4 +57,28 @@ test("report renders persisted case results without a model", async () => {
   await writeFile(join(runDirectory, "results.json"), JSON.stringify({ status: "COMPLETED", results: [{ schemaVersion: 1, testCaseId: "B2B-001", executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Dashboard loaded", evidence: [{ stepId: "open-login", claim: "Dashboard visible", evidenceIds: ["ev-1"] }], reviewReason: null, error: null }] }));
   expect(await main(["report", "--run", runDirectory])).toBe(0);
   expect(await readFile(join(runDirectory, "report.md"), "utf8")).toContain("B2B-001 — PASS");
+});
+
+test("debounces duplicate SIGINT delivery from a script runner", () => {
+  const originalExit = process.exit;
+  const originalNow = Date.now;
+  let exitCode: number | undefined;
+  let now = 10_000;
+  process.exit = ((code?: number) => { exitCode = code; }) as never;
+  Date.now = () => now;
+  const interrupt = interruptController();
+  try {
+    process.emit("SIGINT");
+    now += 1_000;
+    process.emit("SIGINT");
+    expect(interrupt.controller.signal.aborted).toBe(true);
+    expect(exitCode).toBeUndefined();
+    now += 5_000;
+    process.emit("SIGINT");
+    expect(exitCode).toBe(130);
+  } finally {
+    interrupt.dispose();
+    process.exit = originalExit;
+    Date.now = originalNow;
+  }
 });

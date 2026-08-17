@@ -9,7 +9,7 @@ steps:
   - id: open-login
     instruction: Open the lab cabinet sign-in screen
   - id: observe-disabled
-    instruction: Confirm Sign in is disabled while Email and Password are empty
+    instruction: Call browser.snapshot with stepId observe-disabled and confirm Sign in is disabled while Email and Password are empty
 oracle:
   source: qa-heuristic
   expect:

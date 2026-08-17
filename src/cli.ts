@@ -16,6 +16,8 @@ interface Arguments {
   values: Record<string, string>;
 }
 
+const DUPLICATE_INTERRUPT_WINDOW_MS = 5_000;
+
 function parseArguments(argv: readonly string[]): Arguments {
   const [command, ...rest] = argv;
   if (!command) throw new Error("missing command");
@@ -48,7 +50,11 @@ function usage(): string {
 export function interruptController(): { controller: AbortController; dispose: () => void } {
   const controller = new AbortController();
   let signals = 0;
+  let lastSignalAt = 0;
   const onInterrupt = () => {
+    const now = Date.now();
+    if (now - lastSignalAt < DUPLICATE_INTERRUPT_WINDOW_MS) return;
+    lastSignalAt = now;
     signals += 1;
     if (signals === 1) controller.abort(new Error("SIGINT"));
     else process.exit(130);
@@ -135,4 +141,4 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 }
 
-if (import.meta.main) process.exitCode = await main();
+if (import.meta.main) process.exit(await main());

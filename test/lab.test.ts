@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { scoreLab, type LabRun } from "../src/lab.js";
+import { markLabAborted, reconcileChildRunStatus, scoreLab, type LabRun } from "../src/lab.js";
 import type { CaseResult } from "../src/schema.js";
 
 function completed(id: string, verdict: Exclude<CaseResult["verdict"], null>): CaseResult {
@@ -11,6 +11,15 @@ function run(id: string, results: CaseResult[], status: LabRun["status"] = "COMP
 }
 
 const expectedCases = { "CAB-001": "PASS", "CAB-004": "FAIL" } as const;
+
+test("child process exit status cannot be hidden by a completed checkpoint", () => {
+  expect(reconcileChildRunStatus(0, "COMPLETED")).toBe("COMPLETED");
+  expect(reconcileChildRunStatus(1, "COMPLETED")).toBe("COMPLETED");
+  expect(reconcileChildRunStatus(2, "COMPLETED")).toBe("ERROR");
+  expect(reconcileChildRunStatus(130, "COMPLETED")).toBe("ABORTED");
+  expect(reconcileChildRunStatus(0, "ERROR")).toBe("ERROR");
+  expect(reconcileChildRunStatus(0, "MISSING")).toBe("ERROR");
+});
 
 test("lab scorecard fails closed for missing repeats and cases", () => {
   expect(scoreLab({ expectedRepeatCount: 1, expectedCases, runs: [] }).stable).toBe(false);
@@ -64,6 +73,16 @@ test("lab scorecard reports an aborted child run with exit 130", () => {
     runs: [run("run-01", [completed("CAB-001", "PASS"), completed("CAB-004", "FAIL")], "ABORTED")],
   });
 
+  expect(scored.status).toBe("ABORTED");
+  expect(scored.stable).toBe(false);
+  expect(scored.exitCode).toBe(130);
+});
+
+test("late SIGINT marks a fully collected lab as aborted", () => {
+  const runs = [run("run-01", [completed("CAB-001", "PASS"), completed("CAB-002", "FAIL")])];
+  markLabAborted(runs, 1);
+  const scored = scoreLab({ expectedRepeatCount: 1, expectedCases, runs });
+  expect(runs[0]?.status).toBe("ABORTED");
   expect(scored.status).toBe("ABORTED");
   expect(scored.stable).toBe(false);
   expect(scored.exitCode).toBe(130);

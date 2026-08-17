@@ -1,6 +1,7 @@
 const port = Number(process.env.QA_LAB_PORT ?? "3200");
 const validEmail = process.env.QA_EMAIL ?? "qa@example.test";
 const validPassword = process.env.QA_PASSWORD ?? "fixture-password";
+const healthToken = process.env.QA_LAB_HEALTH_TOKEN ?? "";
 
 const tableRows = Array.from({ length: 80 }, (_, index) => `<tr><td><button type="button">SKU-${index + 1}</button></td><td>Product ${index + 1}</td></tr>`).join("");
 
@@ -47,6 +48,9 @@ const cabinet = `<!doctype html>
   document.querySelector('#slow-check').addEventListener('click', async () => {
     await fetch('/api/slow');
     document.querySelector('#section').innerHTML = '<h2>Slow check complete</h2><p>Slow response rendered</p>';
+  });
+  document.querySelector('#below').addEventListener('click', () => {
+    document.querySelector('#section').innerHTML = '<h2>Below control clicked</h2><p>Offscreen interaction completed</p>';
   });
   signIn.addEventListener('click', async () => {
     const response = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: email.value, password: password.value }) });
@@ -107,6 +111,7 @@ const server = Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/__qa_health") return new Response(healthToken);
     if (url.pathname === "/api/login") {
       if (request.method !== "POST") return new Response(null, { status: 405 });
       const credentials = await request.json() as { email?: string; password?: string };

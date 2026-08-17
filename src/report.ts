@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AccessEvent } from "./access.js";
+import { sanitizeAccessUrl, type AccessEvent } from "./access.js";
 import type { CaseResult, Verdict } from "./schema.js";
 
 export interface RunSummary {
@@ -57,7 +57,8 @@ export function markdownReport(results: readonly CaseResult[], summary: RunSumma
   if (access.length > 0) {
     lines.push("## Access trail", "");
     for (const event of access) {
-      lines.push(`- ${event.at} \`${event.caseId}\` ${event.action} ${event.stepId}${event.ref ? ` ${event.ref}` : ""}${event.pageUrl ? ` → ${event.pageUrl}` : ""}${event.actionStatus ? ` (${event.actionStatus})` : ""}`);
+      const pageUrl = sanitizeAccessUrl(event.pageUrl) ?? sanitizeAccessUrl(event.requestedUrl);
+      lines.push(`- ${event.at} \`${event.caseId}\` ${event.action} ${event.stepId}${event.ref ? ` ${event.ref}` : ""}${pageUrl ? ` → ${pageUrl}` : ""}${event.actionStatus ? ` (${event.actionStatus})` : ""}`);
     }
     lines.push("");
   }

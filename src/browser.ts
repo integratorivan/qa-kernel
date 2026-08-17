@@ -119,17 +119,174 @@ function isLongLived(entry: NetworkEntry): boolean {
   return /(?:long[-_]?poll|event|stream)/i.test(new URL(entry.request.url()).pathname);
 }
 
+function processTree(): Map<number, number> {
+  const table = new Map<number, number>();
+  const output = Bun.spawnSync(["ps", "-axo", "pid=,ppid="]).stdout.toString();
+  for (const line of output.split("\n")) {
+    const [pidText, parentText] = line.trim().split(/\s+/, 2);
+    const pid = Number(pidText);
+    const parent = Number(parentText);
+    if (Number.isInteger(pid) && Number.isInteger(parent)) table.set(pid, parent);
+  }
+  return table;
+}
+
+function descendantsOf(root: number, table = processTree()): Set<number> {
+  const descendants = new Set<number>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, parent] of table) {
+      if (parent !== root && !descendants.has(parent)) continue;
+      if (descendants.has(pid)) continue;
+      descendants.add(pid);
+      changed = true;
+    }
+  }
+  return descendants;
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (pid <= 1 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface ProcessIdentity {
+  pid: number;
+  startedAt: string;
+  command: string;
+}
+
+function processIdentity(pid: number): ProcessIdentity | null {
+  if (!isProcessAlive(pid)) return null;
+  const startedAt = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart="]).stdout.toString().trim();
+  const command = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]).stdout.toString().trim();
+  return startedAt && command ? { pid, startedAt, command } : null;
+}
+
+function isSameProcess(identity: ProcessIdentity): boolean {
+  const current = processIdentity(identity.pid);
+  return current?.startedAt === identity.startedAt && current.command === identity.command;
+}
+
+function signalProcess(identity: ProcessIdentity, signal: NodeJS.Signals): void {
+  if (!isSameProcess(identity)) return;
+  try {
+    process.kill(identity.pid, signal);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : null;
+    if (code !== "ESRCH") throw error;
+  }
+}
+
+async function waitForProcessExit(identities: ReadonlyMap<number, ProcessIdentity>, timeoutMs: number): Promise<ProcessIdentity[]> {
+  const deadline = Date.now() + timeoutMs;
+  let live = [...identities.values()].filter(isSameProcess);
+  while (live.length > 0 && Date.now() < deadline) {
+    await Bun.sleep(25);
+    live = live.filter(isSameProcess);
+  }
+  return live;
+}
+
+function ownedProcessTree(ownedProcesses: ReadonlyMap<number, ProcessIdentity>): Map<number, ProcessIdentity> {
+  const table = processTree();
+  const owned = new Map(ownedProcesses);
+  for (const identity of ownedProcesses.values()) {
+    if (!isSameProcess(identity)) continue;
+    for (const pid of descendantsOf(identity.pid, table)) {
+      const descendant = processIdentity(pid);
+      if (descendant) owned.set(pid, descendant);
+    }
+  }
+  return owned;
+}
+
+function playwrightProcessesForLaunch(launchId: string): Map<number, ProcessIdentity> {
+  const owned = new Map<number, ProcessIdentity>();
+  for (const pid of descendantsOf(process.pid)) {
+    const identity = processIdentity(pid);
+    if (identity?.command.includes(`--qa-kernel-launch-id=${launchId}`)) owned.set(pid, identity);
+  }
+  return owned;
+}
+
+async function forceCloseOwnedBrowser(browser: Browser | null, ownedProcesses: ReadonlyMap<number, ProcessIdentity>): Promise<void> {
+  const owned = ownedProcessTree(ownedProcesses);
+  if (browser) {
+    const graceful = browser.close().catch(() => {});
+    await Promise.race([graceful, Bun.sleep(100)]);
+  }
+  let live = [...owned.values()].filter(isSameProcess).reverse();
+  for (const identity of live) signalProcess(identity, "SIGTERM");
+  live = await waitForProcessExit(owned, 500);
+  for (const identity of live.reverse()) signalProcess(identity, "SIGKILL");
+  live = await waitForProcessExit(owned, 1_000);
+  if (live.length > 0) throw new Error(`Chromium processes survived cleanup: ${live.map((item) => item.pid).join(", ")}`);
+}
+
 export type Screenshotter = (page: Page) => Promise<Buffer>;
 
 
 export class BrowserController {
   #browser: Browser | null = null;
+  #ownedProcesses = new Map<number, ProcessIdentity>();
+  #generation = 0;
+  #pendingLaunch: { generation: number; launchId: string; owned: Map<number, ProcessIdentity> } | null = null;
 
-  constructor(private readonly allowedOrigins: ReadonlySet<string>, private readonly headless = true, private readonly screenshot: Screenshotter = (page) => page.screenshot({ type: "png" })) {}
+  constructor(private readonly allowedOrigins: ReadonlySet<string>, private readonly headless = true, private readonly screenshot: Screenshotter = (page) => page.screenshot({ type: "png" }), private readonly launchBrowser: (launchId: string) => Promise<Browser> = (launchId) => chromium.launch({ headless, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, args: [`--qa-kernel-launch-id=${launchId}`] })) {}
 
   async start(): Promise<void> {
     if (this.#browser) return;
-    this.#browser = await chromium.launch({ headless: this.headless });
+    if (this.#pendingLaunch) throw new Error("Chromium launch is already in progress");
+    const generation = ++this.#generation;
+    const launchId = crypto.randomUUID();
+    const launchOwned = new Map<number, ProcessIdentity>();
+    this.#pendingLaunch = { generation, launchId, owned: launchOwned };
+    let browser: Browser;
+    try {
+      browser = await this.launchBrowser(launchId);
+    } catch (error) {
+      for (const [pid, identity] of playwrightProcessesForLaunch(launchId)) launchOwned.set(pid, identity);
+      if (generation !== this.#generation) await forceCloseOwnedBrowser(null, launchOwned);
+      else for (const [pid, identity] of launchOwned) this.#ownedProcesses.set(pid, identity);
+      if (this.#pendingLaunch?.generation === generation) this.#pendingLaunch = null;
+      throw error;
+    }
+    for (const [pid, identity] of playwrightProcessesForLaunch(launchId)) launchOwned.set(pid, identity);
+    if (this.#pendingLaunch?.generation === generation) this.#pendingLaunch = null;
+    if (generation !== this.#generation) {
+      await forceCloseOwnedBrowser(browser, launchOwned);
+      throw new Error("Chromium launch was cancelled");
+    }
+    this.#browser = browser;
+    for (const [pid, identity] of launchOwned) this.#ownedProcesses.set(pid, identity);
+    try {
+      const session = await browser.newBrowserCDPSession();
+      const processInfo = await session.send("SystemInfo.getProcessInfo") as { processInfo: { id: number; type: string }[] };
+      await session.detach();
+      if (generation !== this.#generation) throw new Error("Chromium launch was cancelled");
+      for (const item of processInfo.processInfo) {
+        const identity = processIdentity(item.id);
+        if (identity) {
+          launchOwned.set(item.id, identity);
+          this.#ownedProcesses.set(item.id, identity);
+        }
+      }
+      if (!processInfo.processInfo.some((item) => item.type === "browser")) throw new Error("Chromium did not report its owned browser process");
+    } catch (error) {
+      if (generation === this.#generation) {
+        this.#browser = null;
+        ++this.#generation;
+      }
+      await forceCloseOwnedBrowser(browser, launchOwned);
+      throw error;
+    }
   }
 
   async createCase(evidence: EvidenceStore, caseId: string): Promise<CaseBrowser> {
@@ -146,13 +303,40 @@ export class BrowserController {
   }
 
   async close(): Promise<void> {
+    this.#rememberPendingLaunch();
     const browser = this.#browser;
     this.#browser = null;
+    ++this.#generation;
+    this.#ownedProcesses = ownedProcessTree(this.#ownedProcesses);
     await browser?.close();
+    const live = await waitForProcessExit(this.#ownedProcesses, 1_000);
+    if (live.length > 0) throw new Error(`Chromium did not exit after close: ${live.map((item) => item.pid).join(", ")}`);
+    this.#ownedProcesses.clear();
+  }
+
+  async forceClose(): Promise<void> {
+    this.#rememberPendingLaunch();
+    const browser = this.#browser;
+    this.#browser = null;
+    ++this.#generation;
+    await forceCloseOwnedBrowser(browser, this.#ownedProcesses);
+    this.#ownedProcesses.clear();
   }
 
   version(): string | null {
     return this.#browser?.version() ?? null;
+  }
+
+  isAlive(): boolean {
+    return this.#browser?.isConnected() ?? false;
+  }
+
+  #rememberPendingLaunch(): void {
+    const pending = this.#pendingLaunch;
+    if (!pending) return;
+    for (const [pid, identity] of playwrightProcessesForLaunch(pending.launchId)) pending.owned.set(pid, identity);
+    for (const [pid, identity] of pending.owned) this.#ownedProcesses.set(pid, identity);
+    this.#pendingLaunch = null;
   }
 }
 
@@ -233,6 +417,9 @@ export class CaseBrowser {
     return this.#act("scroll", stepId, signal, async () => {
       if (!target) {
         await this.#page.mouse.wheel(0, deltaY);
+        await this.#page.evaluate(() => {
+          (window as typeof window & { __qaScrollOwner?: Element }).__qaScrollOwner = document.scrollingElement ?? document.documentElement;
+        });
         return;
       }
       await this.#assertTargetCurrent(target, ref!);
@@ -241,18 +428,37 @@ export class CaseBrowser {
         while (parent) {
           const style = window.getComputedStyle(parent);
           if (/(auto|scroll)/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight) {
+            (window as typeof window & { __qaScrollOwner?: Element }).__qaScrollOwner = parent;
             parent.scrollBy(0, amount);
             return;
           }
           parent = parent.parentElement;
         }
+        (window as typeof window & { __qaScrollOwner?: Element }).__qaScrollOwner = document.scrollingElement ?? document.documentElement;
         window.scrollBy(0, amount);
       }, deltaY);
     });
   }
 
-  async snapshot(stepId: string): Promise<Observation> {
-    return (await this.#capture(stepId, "after")).observation;
+  async snapshot(stepId: string, signal?: AbortSignal): Promise<Observation> {
+    if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+    const capture = this.#capture(stepId, "after");
+    if (!signal) return (await capture).observation;
+    return await new Promise<Observation>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason ?? new Error("aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      capture.then(
+        (result) => {
+          signal.removeEventListener("abort", onAbort);
+          if (signal.aborted) reject(signal.reason ?? new Error("aborted"));
+          else resolve(result.observation);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
   }
 
   async close(): Promise<void> {
@@ -356,7 +562,13 @@ export class CaseBrowser {
     const visibleText = this.evidence.redactText(await this.#page.locator("body").innerText());
     const safeUrl = this.evidence.redactText(url);
     const safeAria = this.evidence.redactText(aria);
-    const scroll = await this.#page.evaluate(() => ({ scope: "page" as const, x: window.scrollX, y: window.scrollY, maxX: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), maxY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) }));
+    const scroll = await this.#page.evaluate(() => {
+      const owner = (window as typeof window & { __qaScrollOwner?: Element }).__qaScrollOwner;
+      if (owner instanceof HTMLElement && owner.isConnected && owner !== document.scrollingElement && owner !== document.documentElement && owner !== document.body) {
+        return { scope: "container" as const, x: owner.scrollLeft, y: owner.scrollTop, maxX: Math.max(0, owner.scrollWidth - owner.clientWidth), maxY: Math.max(0, owner.scrollHeight - owner.clientHeight) };
+      }
+      return { scope: "page" as const, x: window.scrollX, y: window.scrollY, maxX: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), maxY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) };
+    });
     const snapshotContent = JSON.stringify({ url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, scroll }, null, 2);
     const snapshot = await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "snapshot", url: safeUrl, extension: "json", content: snapshotContent });
     const screenshotId = screenshot?.id ?? "";
@@ -402,7 +614,14 @@ export class CaseBrowser {
   async #settle(watermark: number, actionEndedAt: number, signal?: AbortSignal): Promise<"complete" | "incomplete"> {
     const requestWindowEndsAt = actionEndedAt + REQUEST_WINDOW_MS;
     const deadline = watermark + SETTLE_DEADLINE_MS;
-    let previous = await this.#page.locator("body").innerText();
+    const readBody = async () => this.#page.locator("body").innerText({ timeout: Math.max(1, deadline - Date.now()) });
+    let previous: string;
+    try {
+      previous = await readBody();
+    } catch (error) {
+      if (error instanceof Error && error.name === "TimeoutError") return "incomplete";
+      throw error;
+    }
     let quietSince = Date.now();
     let sawEligibleRequest = false;
     while (Date.now() < deadline) {
@@ -410,7 +629,13 @@ export class CaseBrowser {
       const now = Date.now();
       const eligible = this.#ledger.filter((entry) => entry.settleEligible && entry.startedAt >= watermark && entry.startedAt <= requestWindowEndsAt && !isLongLived(entry));
       if (eligible.length > 0) sawEligibleRequest = true;
-      const current = await this.#page.locator("body").innerText();
+      let current: string;
+      try {
+        current = await readBody();
+      } catch (error) {
+        if (error instanceof Error && error.name === "TimeoutError") return "incomplete";
+        throw error;
+      }
       if (current !== previous) {
         previous = current;
         quietSince = now;
@@ -418,7 +643,7 @@ export class CaseBrowser {
       const domIsQuiet = now - quietSince >= DOM_QUIET_MS;
       if (domIsQuiet && (!sawEligibleRequest || eligible.every((entry) => entry.finishedAt !== null))) return "complete";
       if (!sawEligibleRequest && now >= requestWindowEndsAt) return "incomplete";
-      await this.#page.waitForTimeout(50);
+      await Bun.sleep(50);
     }
     return "incomplete";
   }
@@ -435,7 +660,7 @@ export class CaseBrowser {
     const windowEndsAt = actionEndedAt + REQUEST_WINDOW_MS;
     while (Date.now() < windowEndsAt) {
       if (signal?.aborted) throw signal.reason ?? new Error("aborted");
-      await this.#page.waitForTimeout(Math.min(50, windowEndsAt - Date.now()));
+      await Bun.sleep(Math.min(50, windowEndsAt - Date.now()));
     }
   }
 }

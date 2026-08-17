@@ -150,6 +150,8 @@ describe("browser controller", () => {
     const anchor = initial.interactive.find((target) => target.name === "Scroll area");
     expect(initial.interactive.some((target) => target.name === "Inside container")).toBe(false);
     const scrolled = await browser.scroll("scroll", 1_000, undefined, anchor!.ref);
+    expect(scrolled.observation?.scroll.scope).toBe("container");
+    expect(scrolled.observation?.scroll.y).toBeGreaterThan(0);
     const inside = scrolled.observation?.interactive.find((target) => target.name === "Inside container");
     expect(inside).toBeDefined();
     const clicked = await browser.click(inside!.ref, "inside");
@@ -215,6 +217,14 @@ describe("browser controller", () => {
     // This integration test must interrupt Chromium's real settle loop.
     setTimeout(() => abort.abort(new Error("cancelled by test")), 100);
     await expect(pending).rejects.toThrow("cancelled by test");
+    await browser.close();
+  }, 10_000);
+
+  test("rejects a snapshot when its case signal is already aborted", async () => {
+    const browser = await openCase();
+    const abort = new AbortController();
+    abort.abort(new Error("snapshot cancelled by test"));
+    await expect(browser.snapshot("inspect", abort.signal)).rejects.toThrow("snapshot cancelled by test");
     await browser.close();
   }, 10_000);
 

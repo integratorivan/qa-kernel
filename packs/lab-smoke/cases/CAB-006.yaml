@@ -18,6 +18,7 @@ oracle:
   source: qa-heuristic
   expect:
     - Below viewport is found after scroll
+    - Below control clicked is shown after the interaction
   reject:
     - The control stays undiscoverable after scroll
 safety:

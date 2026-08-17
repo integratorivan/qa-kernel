@@ -1,4 +1,4 @@
-import type { AccessEvent } from "./access.js";
+import { sanitizeAccessUrl, type AccessEvent } from "./access.js";
 import type { CaseResult } from "./schema.js";
 import type { RunSummary } from "./report.js";
 
@@ -26,7 +26,7 @@ export function htmlDashboard(results: readonly CaseResult[], summary: RunSummar
       <td><code>${escape(event.caseId)}</code></td>
       <td>${escape(event.action)}</td>
       <td><code>${escape(event.stepId)}</code>${event.ref ? ` <code>${escape(event.ref)}</code>` : ""}${event.from ? ` from=${escape(event.from)}` : ""}</td>
-      <td>${escape(event.pageUrl ?? event.requestedUrl ?? "")}</td>
+      <td>${escape(sanitizeAccessUrl(event.pageUrl) ?? sanitizeAccessUrl(event.requestedUrl) ?? "")}</td>
       <td>${escape([event.actionStatus, event.observationStatus].filter(Boolean).join(" / "))}</td>
       <td>${shot ? `<a href="${escape(shot)}">screenshot</a>` : ""}</td>
     </tr>`;
@@ -67,12 +67,62 @@ export function htmlDashboard(results: readonly CaseResult[], summary: RunSummar
   <h2>Note for the agent</h2>
   <p>Скопируй и кинь в чат. Секреты не пиши.</p>
   <textarea id="note">${escape(note)}</textarea>
-  <p><button type="button" id="copy">Copy note</button></p>
+  <p><button type="button" id="copy">Copy note</button> <span id="copy-status" role="status"></span></p>
   <script>
     document.getElementById("copy").addEventListener("click", async () => {
-      await navigator.clipboard.writeText(document.getElementById("note").value);
+      const note = document.getElementById("note");
+      const status = document.getElementById("copy-status");
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+        await navigator.clipboard.writeText(note.value);
+      } catch {
+        try {
+          note.focus();
+          note.select();
+          if (!document.execCommand("copy")) throw new Error("copy command was rejected");
+        } catch {
+          status.textContent = "Copy failed. Select the note and copy it manually.";
+          return;
+        }
+      }
+      status.textContent = "Copied";
     });
   </script>
 </body></html>
 `;
+}
+
+export interface LabDashboardRow {
+  id: string;
+  status: "COMPLETED" | "ERROR" | "ABORTED" | "MISSING";
+  counts: RunSummary["counts"];
+  durationMs: number;
+}
+
+export function htmlLabDashboard(rows: readonly LabDashboardRow[]): string {
+  const body = rows.map((row) => `<tr>
+    <td><a href="${escape(row.id)}/dashboard.html">${escape(row.id)}</a></td>
+    <td>${escape(row.status)}</td>
+    <td>${row.counts.PASS}</td>
+    <td>${row.counts.FAIL}</td>
+    <td>${row.counts.BLOCKED}</td>
+    <td>${row.counts.INCONCLUSIVE}</td>
+    <td>${row.counts.CASE_ERROR}</td>
+    <td>${row.durationMs}</td>
+  </tr>`).join("");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>QA lab dashboard</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; color: #111; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border-bottom: 1px solid #ddd; text-align: left; padding: 6px 8px; }
+</style></head><body>
+  <h1>QA lab dashboard</h1>
+  <table><thead><tr><th>repeat</th><th>status</th><th>PASS</th><th>FAIL</th><th>BLOCKED</th><th>INCONCLUSIVE</th><th>CASE_ERROR</th><th>duration ms</th></tr></thead><tbody>${body}</tbody></table>
+</body></html>
+`;
+}
+
+export function htmlMissingRunDashboard(id: string, status: "ERROR" | "ABORTED" | "MISSING", message = ""): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escape(id)} ${status}</title></head><body><h1>${escape(id)}</h1><p>Status: <strong>${status}</strong></p>${message ? `<p>${escape(message)}</p>` : ""}</body></html>\n`;
 }
