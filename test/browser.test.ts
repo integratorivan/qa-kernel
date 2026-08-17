@@ -308,6 +308,37 @@ describe("browser controller", () => {
       await browser.close();
     }
   }, 10_000);
+
+  test("does not persist a secret-valued stable locator", async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-locator-secret-"));
+    const secret = "locator-secret-sentinel";
+    const secretServer = Bun.serve({
+      port: 0,
+      fetch: () => new Response(`<button aria-label="${secret}">Secret control</button>`, { headers: { "content-type": "text/html; charset=utf-8" } }),
+    });
+    const secretOrigin = `http://127.0.0.1:${secretServer.port}`;
+    const secretController = new BrowserController(new Set([secretOrigin]));
+    await secretController.start();
+    const recording = new RecordingWriter(join(temporaryDirectory, "recording.ndjson"));
+    const browser = await secretController.createCase(new EvidenceStore(temporaryDirectory, new SecretRedactor([secret])), "CASE-SECRET", { recording, secretValues: [secret] });
+    try {
+      await expect(browser.open(`${secretOrigin}/?token=${secret}`, "open-secret")).rejects.toThrow("RECORDING_SECRET_LITERAL");
+      const opened = await browser.open(`${secretOrigin}/`, "open-page");
+      const target = opened.observation?.interactive.find((item) => item.name.includes("REDACTED"));
+      expect(target).toBeDefined();
+      await expect(browser.click(target!.ref, "click-secret")).resolves.toMatchObject({ actionStatus: "ok" });
+      await recording.close();
+      const persisted = await readRecording(join(temporaryDirectory, "recording.ndjson"));
+      const click = persisted.entries.find((entry) => entry.kind === "action" && entry.action === "click");
+      if (!click || click.kind !== "action") throw new Error("recorded click action missing");
+      expect(click.locator).toBeNull();
+      expect(JSON.stringify(persisted.entries)).not.toContain(secret);
+    } finally {
+      await browser.close();
+      await secretController.close();
+      await secretServer.stop(true);
+    }
+  }, 15_000);
   test("truncates model-facing snapshot text and keeps the full evidence file", async () => {
     expect(truncateForModel("short", 80).truncated).toBe(false);
     const huge = `${"marker-line\n".repeat(8)}${"x".repeat(ARIA_MAX_CHARS)}`;

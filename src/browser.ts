@@ -885,9 +885,16 @@ export class CaseBrowser {
     return value;
   }
 
+  #safeRecordedLocator(locator: RecordedLocator | null): RecordedLocator | null {
+    if (locator === null) return null;
+    const literals = locator.kind === "role" ? [locator.role, locator.name] : [locator.value];
+    return literals.some((value) => containsSecretLike(value, this.options.secretValues ?? [])) ? null : locator;
+  }
+
   async #recordAction(action: RecordedAction): Promise<void> {
     if (!this.options.recording) return;
-    await this.options.recording.append(action);
+    if ((action.action === "open" && action.url !== null && containsSecretLike(action.url, this.options.secretValues ?? [])) || (action.action === "press" && action.key !== null && containsSecretLike(action.key, this.options.secretValues ?? []))) throw new Error("RECORDING_SECRET_LITERAL");
+    await this.options.recording.append({ ...action, locator: this.#safeRecordedLocator(action.locator) });
   }
 
 
