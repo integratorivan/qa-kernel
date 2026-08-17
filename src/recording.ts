@@ -297,7 +297,13 @@ export function validateRecordingForCase(entries: readonly RecordingEntry[], tes
       if (entry.oracle.list === "reject" && entry.oracle.index >= testCase.oracle.reject.length) throw new RecordingError("check oracle index is out of range");
       const oracle = testCase.oracle[entry.oracle.list][entry.oracle.index];
       if (typeof oracle !== "string") throw new RecordingError("check oracle index is out of range");
-      if (entry.check === "url" ? !groundingMatches(oracle, entry.path) : !groundingMatches(oracle, entry.groundingText)) throw new RecordingError("check is not grounded in its oracle line");
+      if (entry.check === "url") {
+        if (!groundingMatches(oracle, entry.path)) throw new RecordingError("check is not grounded in its oracle line");
+      } else if (entry.check === "text") {
+        if (entry.groundingText !== entry.text || !groundingMatches(oracle, entry.text)) throw new RecordingError("check is not grounded in its oracle line");
+      } else if (!groundingMatches(oracle, entry.groundingText)) {
+        throw new RecordingError("check is not grounded in its oracle line");
+      }
     }
   }
 }

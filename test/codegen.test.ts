@@ -85,6 +85,18 @@ test("matching incomplete readiness still blocks PASS codegen", async () => {
   expect(output.items).toEqual([{ caseId: "FIXTURE-001", status: "error", code: "CODEGEN_UNSUPPORTED_ORACLE" }]);
 });
 
+test("codegen rejects a text check whose literal differs from grounding", async () => {
+  const input = await syntheticRun();
+  const recordingPath = join(input.run, "recording.ndjson");
+  const entries = (await readFile(recordingPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  const check = entries[3];
+  if (!check || typeof check.text !== "string") throw new Error("synthetic check missing text");
+  check.text = "Signed in as test user";
+  await writeFile(recordingPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  const output = await codegenRun({ runDirectory: input.run, outputDirectory: input.out });
+  expect(output.items).toEqual([{ caseId: "FIXTURE-001", status: "error", code: "CODEGEN_UNSUPPORTED_ORACLE" }]);
+});
+
 test("codegen rejects literals matching an available allowlisted secret", async () => {
   const input = await syntheticRun();
   const previous = process.env.QA_PASSWORD;
