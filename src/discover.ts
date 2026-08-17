@@ -10,6 +10,7 @@ import { executePiCase, repairPiResult } from "./pi.js";
 import { openRouterRouting, type ModelConfiguration } from "./model.js";
 import { completeStructuredJson } from "./structured.js";
 
+import { preflightUrl } from "./preflight.js";
 import { SCHEMA_VERSION, type TestCase, validateCase } from "./schema.js";
 
 export interface DiscoverOptions {
@@ -115,6 +116,8 @@ export async function discover(options: DiscoverOptions): Promise<DiscoveryOutpu
   const targetUrl = environment[pack.pack.baseUrlFrom];
   if (!targetUrl) throw new Error(`missing ${pack.pack.baseUrlFrom}`);
   if (!options.apiKey) throw new Error("QA_MODEL_API_KEY is required for the configured QA model");
+  log(`preflight ${targetUrl}`);
+  await preflightUrl(targetUrl);
   await mkdir(options.outputDirectory, { recursive: true });
   const secretValues = new Map(pack.pack.allowedSecretRefs.map((ref) => [ref, environment[ref] ?? ""]));
   const evidence = new EvidenceStore(options.outputDirectory, new SecretRedactor(secretValues.values()));

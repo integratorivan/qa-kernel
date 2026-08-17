@@ -1,0 +1,32 @@
+schemaVersion: 1
+id: B2B-003
+title: Open Objects from the authenticated cabinet
+goal: Verify that one safe main-navigation gesture opens the Objects products page without changing data
+preconditions:
+  - The user is signed out
+  - The non-production Atlas origin is being used
+  - No data-changing form or dialog is active
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill the approved QA_EMAIL and QA_PASSWORD credentials into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the authenticated cabinet
+  - id: open-objects
+    instruction: Click Объекты in the main navigation
+oracle:
+  source: user-approved
+  expect:
+    - The browser opens /objects/products
+    - The authenticated cabinet remains visible
+    - The Товары tab is selected on the Objects page
+  reject:
+    - The browser remains on /monitoring/matrix after the click
+    - The browser returns to /authorization
+    - A create, delete, or save operation is started
+safety:
+  mutation: none

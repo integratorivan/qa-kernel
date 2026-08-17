@@ -116,3 +116,22 @@ test("checks the API key before creating discovery artifacts or Chromium", async
   })).rejects.toThrow("QA_MODEL_API_KEY");
   expect(await Bun.file(outputDirectory).exists()).toBe(false);
 });
+
+test("fails before Chromium when the target URL is unreachable", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "discovery");
+  const dead = "http://127.0.0.1:1/";
+  await expect(discover({
+    packDirectory,
+    outputDirectory,
+    draftOutputDirectory: join(packDirectory, "drafts"),
+    mission: "Find cabinet flows",
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: dead, QA_ALLOWED_ORIGINS: dead },
+    caseExecutor: async () => {
+      throw new Error("case executor must not run when preflight fails");
+    },
+  })).rejects.toThrow(/unreachable/);
+  expect(await Bun.file(outputDirectory).exists()).toBe(false);
+});

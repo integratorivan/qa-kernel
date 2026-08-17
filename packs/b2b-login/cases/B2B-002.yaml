@@ -1,0 +1,29 @@
+schemaVersion: 1
+id: B2B-002
+title: Reject invalid password without opening the cabinet
+goal: Verify that an invalid password produces a visible authentication error and does not open the cabinet
+preconditions:
+  - The user is signed out
+  - The non-production Atlas origin is being used
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-wrong-password
+    instruction: Fill QA_EMAIL in Логин and enter the invented non-secret string not-a-real-password in Пароль; do not use QA_PASSWORD
+  - id: submit-login
+    instruction: Click Войти and wait for the authentication response
+oracle:
+  source: product-requirement
+  expect:
+    - The browser remains on /authorization
+    - The text Неверный логин или пароль is visible
+    - The authorization form remains visible and the authenticated cabinet is not opened
+  reject:
+    - The browser leaves /authorization
+    - An authenticated cabinet page or its main navigation is visible
+    - No authentication error is visible after the response
+safety:
+  mutation: none

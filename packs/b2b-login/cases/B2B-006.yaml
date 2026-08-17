@@ -1,0 +1,30 @@
+schemaVersion: 1
+id: B2B-006
+title: Open the unnamed table-columns popup
+goal: Verify that browser hands can operate the icon-only table-columns control without selecting a column
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill QA_EMAIL and QA_PASSWORD into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the cabinet
+  - id: open-columns-popup
+    instruction: Click the unnamed icon-only control for configuring table columns beside Шаблоны
+oracle:
+  source: user-approved
+  expect:
+    - The browser remains on /monitoring/matrix
+    - A table-columns popup is visible
+    - The popup shows multiple unchecked column checkboxes
+  reject:
+    - Browser hands cannot find or activate the icon-only control
+    - The table-columns popup does not appear
+    - A checkbox is selected or table data is changed
+safety:
+  mutation: none

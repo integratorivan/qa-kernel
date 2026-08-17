@@ -11,6 +11,8 @@ const observation = {
   interactive: [{ ref: "s1-e1", kind: "button" as const, name: "Open", nameSource: "aria" as const, bounds: { x: 0, y: 0, width: 10, height: 10 }, enabled: true }],
   interactiveTruncated: false,
   omittedCount: 0,
+  ariaTruncated: false,
+  visibleTextTruncated: false,
   scroll: { scope: "page" as const, x: 0, y: 0, maxX: 0, maxY: 1_000 },
 };
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { caseJsonSchema, discoveryJsonSchema, secretRefToDataKey } from "../src/contracts.js";
+import { caseJsonSchema, DISCOVERY_INSTRUCTION, discoveryJsonSchema, secretRefToDataKey } from "../src/contracts.js";
 
 test("maps allowlisted secret refs to case data keys", () => {
   expect(secretRefToDataKey("QA_EMAIL")).toBe("emailFrom");
@@ -16,4 +16,12 @@ test("discovery schema requires a full case object instead of summary", () => {
     passwordFrom: { type: "string", enum: ["QA_PASSWORD"], description: "Allowlisted secret ref QA_PASSWORD" },
   });
   expect(caseJsonSchema([]).properties).not.toHaveProperty("summary");
+});
+
+test("discovery instruction requires self-contained observable cases", () => {
+  expect(DISCOVERY_INSTRUCTION).toContain("self-contained");
+  expect(DISCOVERY_INSTRUCTION).toContain("visible controls");
+  expect(DISCOVERY_INSTRUCTION).toContain("3-7 steps");
+  expect(DISCOVERY_INSTRUCTION).toContain("observable facts");
+  expect(DISCOVERY_INSTRUCTION).toContain("behind authentication");
 });

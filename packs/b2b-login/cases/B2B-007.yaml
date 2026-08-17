@@ -1,0 +1,32 @@
+schemaVersion: 1
+id: B2B-007
+title: Scroll the Shops table inside its own viewport
+goal: Verify that browser hands scroll the internal Shops list without moving the page itself
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill QA_EMAIL and QA_PASSWORD into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the cabinet
+  - id: open-shops
+    instruction: Open the Магазины tab under Объекты
+  - id: scroll-inner-table
+    instruction: Scroll inside the Shops table while keeping the page header in place
+oracle:
+  source: user-approved
+  expect:
+    - The browser is on /objects/shops
+    - The page header and cabinet navigation remain in place
+    - The Shops table moves inside its own viewport while the page itself does not scroll
+  reject:
+    - Browser hands scroll the page instead of the Shops table
+    - The table content does not move after the inner scroll
+    - The browser leaves /objects/shops
+safety:
+  mutation: none

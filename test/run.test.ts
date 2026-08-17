@@ -338,7 +338,7 @@ test("continues after CASE_ERROR and counts an intentional status mix", async ()
       if (input.caseId === "RUN-001") return { text: "not-json", activeTools: ["browser"], actions: 1, usage: null };
       const verdicts: Record<string, "PASS" | "FAIL" | "BLOCKED" | "INCONCLUSIVE"> = { "RUN-002": "PASS", "RUN-003": "FAIL", "RUN-004": "BLOCKED", "RUN-005": "INCONCLUSIVE" };
       const verdict = verdicts[input.caseId]!;
-      return { text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict, blockedBy: verdict === "BLOCKED" ? "environment" : null, actual: `Intentional ${verdict}`, evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: verdict === "INCONCLUSIVE" ? "Fixture intentionally leaves the outcome uncertain" : null, error: null }), activeTools: ["browser"], actions: 1, usage: null };
+      return { text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict, blockedBy: verdict === "BLOCKED" ? "environment" : null, actual: verdict === "PASS" ? "Cabinet opened" : `Intentional ${verdict}`, evidence: [{ stepId: "open-login", claim: verdict === "PASS" ? "Cabinet rendered" : "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: verdict === "INCONCLUSIVE" ? "Fixture intentionally leaves the outcome uncertain" : null, error: null }), activeTools: ["browser"], actions: 1, usage: null };
     },
     resultRepairer: async () => "still-not-json",
   });
@@ -540,7 +540,7 @@ test("continues after a completed BLOCKED case", async () => {
       const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
       const verdict = input.caseId === "RUN-001" ? "BLOCKED" : "PASS";
       return {
-        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict, blockedBy: verdict === "BLOCKED" ? "environment" : null, actual: "Fixture verdict", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict, blockedBy: verdict === "BLOCKED" ? "environment" : null, actual: verdict === "PASS" ? "Cabinet opened" : "Fixture verdict", evidence: [{ stepId: "open-login", claim: verdict === "PASS" ? "Cabinet rendered" : "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
         activeTools: ["browser"],
         actions: 1,
         usage: null,
@@ -567,7 +567,7 @@ test("removes a sentinel secret from browser evidence and every run artifact", a
       const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
       const email = opened.observation?.interactive.find((target) => target.name === "Email");
       const filled = await input.browser.fillSecret(email!.ref, input.secretValues.get("QA_SECRET")!, "open-login", input.signal);
-      return { text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: `Opened for ${secret}`, evidence: [{ stepId: "open-login", claim: `The ${secret} account opened`, evidenceIds: filled.afterEvidenceIds }], reviewReason: null, error: null }), activeTools: ["browser"], actions: 2, usage: null };
+      return { text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: `Cabinet opened for ${secret}`, evidence: [{ stepId: "open-login", claim: `The ${secret} account opened`, evidenceIds: filled.afterEvidenceIds }], reviewReason: null, error: null }), activeTools: ["browser"], actions: 2, usage: null };
     },
   });
   expect(output.results[0]?.actual).toContain("[REDACTED]");
@@ -863,3 +863,47 @@ test("bounds a Chromium launch that never resolves", async () => {
   expect(output.results).toEqual([]);
   expect(await readFile(join(outputDirectory, "events.ndjson"), "utf8")).toContain('"code":"BROWSER_LAUNCH_TIMEOUT"');
 }, 30_000);
+
+test("downgrades a PASS that never addresses the oracle expect", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: origin, QA_ALLOWED_ORIGINS: origin },
+    caseExecutor: async (input) => {
+      const opened = await input.browser.open(`${origin}/`, "open-login", input.signal);
+      return {
+        text: JSON.stringify({ schemaVersion: 1, testCaseId: input.caseId, executionStatus: "completed", verdict: "PASS", blockedBy: null, actual: "Something else appeared", evidence: [{ stepId: "open-login", claim: "Fixture rendered", evidenceIds: opened.afterEvidenceIds }], reviewReason: null, error: null }),
+        activeTools: ["browser"],
+        actions: 1,
+        usage: null,
+      };
+    },
+  });
+  expect(output.results[0]?.verdict).toBe("INCONCLUSIVE");
+  expect(output.results[0]?.reviewReason).toContain("Cabinet loads");
+  expect(await readFile(join(outputDirectory, "events.ndjson"), "utf8")).toContain('"type":"oracle_coverage"');
+}, 15_000);
+
+test("fails before Chromium when the target URL is unreachable", async () => {
+  const packDirectory = await writePack();
+  const outputDirectory = join(temporaryDirectory, "run");
+  const dead = "http://127.0.0.1:1/";
+  const output = await runPack({
+    packDirectory,
+    outputDirectory,
+    apiKey: "test-key",
+    modelConfiguration: { provider: "openrouter", model: "z-ai/glm-5.2" },
+    environment: { TARGET_URL: dead, QA_ALLOWED_ORIGINS: dead },
+    browserLaunchTimeoutMs: 10,
+    caseExecutor: async () => {
+      throw new Error("case executor must not run when preflight fails");
+    },
+  });
+  expect(output.summary.status).toBe("ERROR");
+  expect(output.results).toEqual([]);
+  expect(await readFile(join(outputDirectory, "events.ndjson"), "utf8")).toContain("unreachable");
+}, 15_000);

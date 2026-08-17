@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrowserController } from "../src/browser.js";
+import { ARIA_MAX_CHARS, BrowserController, truncateForModel, VISIBLE_TEXT_MAX_CHARS } from "../src/browser.js";
 import { EvidenceStore, SecretRedactor } from "../src/artifacts.js";
 
 let server: Bun.Server<unknown>;
@@ -289,4 +289,35 @@ describe("browser controller", () => {
     }
     await browser.close();
   }, 10_000);
+
+  test("truncates model-facing snapshot text and keeps the full evidence file", async () => {
+    expect(truncateForModel("short", 80).truncated).toBe(false);
+    const huge = `${"marker-line\n".repeat(8)}${"x".repeat(ARIA_MAX_CHARS)}`;
+    const truncated = truncateForModel(huge, 80);
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.text.length).toBeLessThan(huge.length);
+    expect(truncated.text).toContain("truncated:");
+
+    const html = `<!doctype html><html><body><p id="blob">${"visible-chunk-".repeat(Math.ceil(VISIBLE_TEXT_MAX_CHARS / 10))}</p><button>Open cabinet</button></body></html>`;
+    const largeServer = Bun.serve({ port: 0, fetch: () => new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }) });
+    const largeOrigin = `http://127.0.0.1:${largeServer.port}`;
+    const largeController = new BrowserController(new Set([largeOrigin]));
+    await largeController.start();
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-truncate-"));
+    const evidence = new EvidenceStore(temporaryDirectory, new SecretRedactor([]));
+    const browser = await largeController.createCase(evidence, "B2B-001");
+    try {
+      const opened = await browser.open(`${largeOrigin}/`, "open-page");
+      expect(opened.observation?.visibleTextTruncated).toBe(true);
+      expect(opened.observation?.visibleText.length).toBeLessThan(VISIBLE_TEXT_MAX_CHARS + 80);
+      const snapshot = evidence.all().find((item) => item.id === opened.observation?.snapshotId);
+      expect(snapshot).toBeDefined();
+      const persisted = JSON.parse(await readFile(join(temporaryDirectory, snapshot!.file), "utf8")) as { visibleText: string };
+      expect(persisted.visibleText.length).toBeGreaterThan(VISIBLE_TEXT_MAX_CHARS);
+    } finally {
+      await browser.close();
+      await largeController.close();
+      largeServer.stop(true);
+    }
+  }, 15_000);
 });

@@ -1,0 +1,30 @@
+schemaVersion: 1
+id: B2B-005
+title: Expand the first monitoring matrix row
+goal: Verify that browser hands can reach the row expander next to Вина and reveal nested rows
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill QA_EMAIL and QA_PASSWORD into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the cabinet
+  - id: expand-first-row
+    instruction: Click the expand control next to the first row labeled Вина
+oracle:
+  source: user-approved
+  expect:
+    - The browser remains on /monitoring/matrix
+    - The expanded row control is visible as Collapse row
+    - Additional row expand controls are visible below the expanded row
+  reject:
+    - The row remains collapsed after the click
+    - Browser hands cannot find or activate the row expand control
+    - A data-changing form or dialog opens
+safety:
+  mutation: none

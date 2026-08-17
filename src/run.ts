@@ -9,6 +9,8 @@ import { openRouterRouting, type ModelConfiguration } from "./model.js";
 
 import { htmlDashboard } from "./dashboard.js";
 import { loadAccess, markdownReport, summarize, type RunSummary } from "./report.js";
+import { applyOracleCoverage } from "./oracle.js";
+import { preflightUrl } from "./preflight.js";
 import { type CaseResult, SCHEMA_VERSION, SchemaError, validateResult } from "./schema.js";
 
 export interface RunOptions {
@@ -184,6 +186,9 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   }
 
   try {
+    const targetUrl = environment[pack.pack.baseUrlFrom];
+    if (!targetUrl) throw new Error(`missing ${pack.pack.baseUrlFrom}`);
+    await preflightUrl(targetUrl);
     await executeWithDeadline(async () => await controller.start(), options.signal, options.browserLaunchTimeoutMs ?? 30_000, "BROWSER_LAUNCH_TIMEOUT", abortGraceMs);
     metadata.versions.chromium = controller.version();
     for (let caseIndex = 0; caseIndex < pack.cases.length; caseIndex += 1) {
@@ -291,6 +296,12 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           result = parseModelResult(redactor.redact(repaired));
           await validateResultEvidence(result, loaded.testCase.id, new Set(loaded.testCase.steps.map((step) => step.id)), evidence);
         }
+        if (!result) throw new Error(`case ${loaded.testCase.id} completed without a result`);
+        const covered = applyOracleCoverage(result, loaded.testCase.oracle.expect);
+        if (covered.dropped.length > 0) {
+          await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "oracle_coverage", caseId: loaded.testCase.id, dropped: covered.dropped, at: new Date().toISOString() });
+        }
+        result = covered.result;
         await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_completed", caseId: loaded.testCase.id, actions: execution.actions, at: new Date().toISOString() });
       } catch (error) {
         if (options.signal?.aborted) {

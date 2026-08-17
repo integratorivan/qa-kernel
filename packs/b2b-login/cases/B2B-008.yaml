@@ -1,0 +1,32 @@
+schemaVersion: 1
+id: B2B-008
+title: Open the Reports type picker without creating a report
+goal: Verify that browser hands can open the custom report-type picker while leaving report creation untouched
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill QA_EMAIL and QA_PASSWORD into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the cabinet
+  - id: open-reports
+    instruction: Open Отчеты from the main navigation
+  - id: open-report-type-picker
+    instruction: Click Выбор типа отчета without choosing a report type
+oracle:
+  source: user-approved
+  expect:
+    - The browser remains on /reports
+    - The custom report-type popup is visible
+    - The popup shows radio options Магазин-ассортимент, Матрица, Продажи по МГ, and ABC Отчет по товарам
+  reject:
+    - Browser hands cannot open the report-type popup
+    - The radio options are not visible after the click
+    - Report creation or a save operation starts
+safety:
+  mutation: none

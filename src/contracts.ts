@@ -133,4 +133,19 @@ export const RESULT_JSON_SCHEMA: JsonSchema = {
   },
 };
 
-export const DISCOVERY_INSTRUCTION = "Explore only areas directly reachable for this mission. Use browser.open first. When finished, return only one JSON object that matches resultContract exactly. Each draft.case must be a full semantic case object with schemaVersion, id, title, goal, preconditions, data, steps, oracle, and safety. Do not add summary or other fields. Do not put a string in case. Every draft needs existing explore-step evidence IDs. ready requires a successful click, fill, or press. needsCapability is only when a visible control could not be operated after a fresh snapshot. Do not invent unseen capability.";
+export const DISCOVERY_INSTRUCTION = [
+  "Explore only areas directly reachable for this mission.",
+  "Use browser.open first.",
+  "Each draft must be self-contained: if the flow needs login, include those login steps in that same case and do not assume another draft already ran.",
+  "Name visible controls in steps: click Войти, fill the Email field. Do not write vague navigate-to-login instructions.",
+  "oracle.expect and oracle.reject must be observable facts: visible text, URL, element presence, or network outcome. Not CSS, colors, performance, or layout.",
+  "Keep each case short: 3-7 steps. A focused case that can pass is better than a long tour.",
+  "Do not invent features behind authentication unless you operated a visible login form in this session.",
+  "When finished, return only one JSON object that matches resultContract exactly.",
+  "Each draft.case must be a full semantic case object with schemaVersion, id, title, goal, preconditions, data, steps, oracle, and safety.",
+  "Do not add summary or other fields. Do not put a string in case.",
+  "Every draft needs existing explore-step evidence IDs.",
+  "ready requires a successful click, fill, or press.",
+  "needsCapability is only when a visible control could not be operated after a fresh snapshot.",
+  "Do not invent unseen capability.",
+].join(" ");

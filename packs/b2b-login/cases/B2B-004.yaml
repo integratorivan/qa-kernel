@@ -1,0 +1,30 @@
+schemaVersion: 1
+id: B2B-004
+title: Open the Division custom selector
+goal: Verify that browser hands can open the non-native Дивизион selector and expose its options
+preconditions:
+  - The user is signed out
+data:
+  emailFrom: QA_EMAIL
+  passwordFrom: QA_PASSWORD
+steps:
+  - id: open-login
+    instruction: Open the authorization page
+  - id: fill-credentials
+    instruction: Fill QA_EMAIL and QA_PASSWORD into Логин and Пароль
+  - id: submit-login
+    instruction: Click Войти and wait for the cabinet
+  - id: open-division-selector
+    instruction: Click Дивизион in the monitoring matrix filters without choosing an option
+oracle:
+  source: user-approved
+  expect:
+    - The browser remains on /monitoring/matrix
+    - A selector popup is visible
+    - The popup shows the radio options Запад and Восток
+  reject:
+    - The click does not open the selector popup
+    - The browser leaves /monitoring/matrix
+    - The options are not visible after the click
+safety:
+  mutation: none

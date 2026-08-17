@@ -7,6 +7,16 @@ const MAX_TABLE_TARGETS = 20;
 const REQUEST_WINDOW_MS = 1_500;
 const SETTLE_DEADLINE_MS = 8_000;
 const DOM_QUIET_MS = 300;
+export const ARIA_MAX_CHARS = 80_000;
+export const VISIBLE_TEXT_MAX_CHARS = 30_000;
+
+export function truncateForModel(text: string, maxChars: number): { text: string; truncated: boolean } {
+  if (text.length <= maxChars) return { text, truncated: false };
+  const sliced = text.slice(0, maxChars);
+  const lineBreak = sliced.lastIndexOf("\n");
+  const kept = lineBreak > 0 ? sliced.slice(0, lineBreak) : sliced;
+  return { text: `${kept}\n\n[truncated: showing ${maxChars} of ${text.length} chars]`, truncated: true };
+}
 
 export type InteractiveKind = "button" | "link" | "input" | "icon-control" | "clickable";
 export type NameSource = "aria" | "label" | "title" | "placeholder" | "nearby-header" | "nearby-text";
@@ -37,6 +47,8 @@ export interface Observation {
   interactive: InteractiveTarget[];
   interactiveTruncated: boolean;
   omittedCount: number;
+  ariaTruncated: boolean;
+  visibleTextTruncated: boolean;
   scroll: ScrollState;
 }
 
@@ -628,11 +640,13 @@ export class CaseBrowser {
       }
       return { scope: "page" as const, x: window.scrollX, y: window.scrollY, maxX: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), maxY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) };
     });
+    const modelAria = truncateForModel(safeAria, ARIA_MAX_CHARS);
+    const modelVisible = truncateForModel(visibleText, VISIBLE_TEXT_MAX_CHARS);
     const snapshotContent = JSON.stringify({ url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, scroll }, null, 2);
     const snapshot = await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "snapshot", url: safeUrl, extension: "json", content: snapshotContent });
     const screenshotId = screenshot?.id ?? "";
     if (!screenshotId) warnings.push("screenshot capture failed");
-    return { observation: { snapshotId: snapshot.id, screenshotId, url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, scroll }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
+    return { observation: { snapshotId: snapshot.id, screenshotId, url: safeUrl, visibleText: modelVisible.text, aria: modelAria.text, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, ariaTruncated: modelAria.truncated, visibleTextTruncated: modelVisible.truncated, scroll }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
   }
 
   async #captureScreenshot(stepId: string, phase: "before" | "after", url: string, warnings: string[]): Promise<Evidence | null> {
