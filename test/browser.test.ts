@@ -27,9 +27,18 @@ const pageHtml = `<!doctype html>
     <button id="inside-scroll" onclick="document.querySelector('#result').textContent = 'Container clicked'">Inside container</button>
   </div>
 
+  <div id="toolbar" role="toolbar">
+    <button id="templates">Шаблоны</button>
+    <button id="columns-icon" onclick="document.querySelector('#columns-popup').hidden = false; document.querySelector('#columns-popup').dataset.open = 'true'; document.querySelector('#columns-popup').textContent = 'Columns open'"><img src="/icon.svg"></button>
+    <span id="columns-label">Колонки</span>
+    <button id="labelled-icon" aria-labelledby="columns-label" onclick="document.querySelector('#result').textContent = 'Labelled icon clicked'"><img src="/icon.svg"></button>
+  </div>
+  <button id="orphan-icon"><img src="/icon.svg"></button>
+  <svg id="raw-svg" width="16" height="16"></svg>
   <div id="result"></div>
-  <table><thead><tr><th>Product code <button id="header-search" class="icon">⌕</button></th></tr></thead><tbody>${Array.from({ length: 100 }, (_, index) => `<tr><td><button>row-${index}</button></td></tr>`).join("")}</tbody></table>
+  <table><thead><tr><th>Product code <button id="header-search" class="icon">⌕</button></th></tr></thead><tbody>${Array.from({ length: 100 }, (_, index) => `<tr><td><button>row-${index}</button></td><td>bare cell</td></tr>`).join("")}</tbody></table>
   <button id="below" style="margin-top: 1400px" onclick="document.querySelector('#result').textContent = 'Below clicked'">Below viewport</button>
+  <div id="columns-popup" hidden data-open="false"></div>
 </body></html>`;
 
 beforeAll(async () => {
@@ -102,16 +111,38 @@ describe("browser controller", () => {
     await timingController.close();
   }, 10_000);
 
-  test("finds named controls and a header icon without expanding table cells", async () => {
+  test("finds named controls and local toolbar/header icons without expanding table cells", async () => {
     const browser = await openCase();
-    const observation = (await browser.snapshot("inspect"));
+    const observation = await browser.snapshot("inspect");
     const save = observation.interactive.find((target) => target.name === "Save profile");
     const icon = observation.interactive.find((target) => target.name.includes("Product code"));
+    const toolbarIcon = observation.interactive.find((target) => target.kind === "icon-control" && target.name.includes("Шаблоны"));
     expect(save).toBeDefined();
     expect(icon?.kind).toBe("icon-control");
+    expect(toolbarIcon?.kind).toBe("icon-control");
+    expect(toolbarIcon?.nameSource).toBe("nearby-text");
+    const labelledIcon = observation.interactive.find((target) => target.kind === "icon-control" && target.name.includes("Колонки"));
+    expect(labelledIcon?.nameSource).toBe("nearby-text");
+    expect(observation.interactive.filter((target) => target.kind === "icon-control")).toHaveLength(3);
+    expect(observation.interactive.some((target) => target.name === "orphan-icon")).toBe(false);
+    expect(observation.interactive.some((target) => target.name === "bare cell")).toBe(false);
+    expect(observation.interactive.some((target) => target.name === "raw-svg")).toBe(false);
     expect(observation.interactive.length).toBeLessThanOrEqual(60);
     expect(observation.interactive.filter((target) => target.name.startsWith("row-")).length).toBeLessThanOrEqual(20);
-    await browser.click(save!.ref, "save");
+    expect(observation.interactiveTruncated).toBe(true);
+    expect(observation.omittedCount).toBeGreaterThan(0);
+
+    const headerClicked = await browser.click(icon!.ref, "header-search");
+    expect(headerClicked.actionStatus).toBe("ok");
+    const toolbarAfterHeader = headerClicked.observation?.interactive.find((target) => target.kind === "icon-control" && target.name.includes("Шаблоны"));
+    expect(toolbarAfterHeader).toBeDefined();
+    const toolbarClicked = await browser.click(toolbarAfterHeader!.ref, "open-columns");
+    expect(toolbarClicked.observation?.visibleText).toContain("Columns open");
+    const saveAfterToolbar = toolbarClicked.observation?.interactive.find((target) => target.name === "Save profile");
+    const saved = await browser.click(saveAfterToolbar!.ref, "save");
+    const labelledAfterSave = saved.observation?.interactive.find((target) => target.kind === "icon-control" && target.name.includes("Колонки"));
+    const labelledClicked = await browser.click(labelledAfterSave!.ref, "labelled-icon");
+    expect(labelledClicked.observation?.visibleText).toContain("Labelled icon clicked");
     await browser.close();
   }, 10_000);
 

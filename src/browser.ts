@@ -519,29 +519,88 @@ export class CaseBrowser {
     const url = this.#page.url();
     const screenshot = await this.#captureScreenshot(stepId, phase, url, warnings);
     const aria = await this.#page.locator("body").ariaSnapshot();
-    const rawCandidates = await this.#page.locator(TARGET_SELECTOR).evaluateAll((elements) => elements.map((element, index) => {
-      const bounds = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      if (bounds.width <= 0 || bounds.height <= 0 || bounds.right <= 0 || bounds.bottom <= 0 || bounds.left >= window.innerWidth || bounds.top >= window.innerHeight || style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return null;
-      const html = element as HTMLElement;
-      const tag = element.tagName.toLowerCase();
-      const ariaLabel = element.getAttribute("aria-label")?.trim();
-      const labels = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? [...(element.labels ?? [])].map((label) => label.innerText.trim()).filter(Boolean).join(" ") : "";
-      const title = element.getAttribute("title")?.trim();
-      const placeholder = html.getAttribute("placeholder")?.trim();
-      const rawOwnText = html.innerText?.trim().replace(/\s+/g, " ") ?? "";
-      const ownText = /^[\p{P}\p{S}\s]+$/u.test(rawOwnText) ? "" : rawOwnText;
-      const header = element.closest("th")?.innerText.trim().replace(/\s+/g, " ") ?? "";
-      const nearby = element.closest("label, [role=group], [role=region]")?.textContent?.trim().replace(/\s+/g, " ") ?? "";
-      const name = ariaLabel || labels || title || placeholder || ownText || (header ? `${header} — control` : nearby);
-      const nameSource: NameSource = ariaLabel ? "aria" : labels ? "label" : title ? "title" : placeholder ? "placeholder" : header ? "nearby-header" : "nearby-text";
-      const kind: InteractiveKind = tag === "button" || element.getAttribute("role") === "button" ? nameSource === "nearby-header" && !ariaLabel && !ownText ? "icon-control" : "button" : tag === "a" || element.getAttribute("role") === "link" ? "link" : ["input", "textarea", "select"].includes(tag) ? "input" : "clickable";
-      if (!name) return null;
-      const semantic = Boolean(ariaLabel || labels || title || placeholder || ownText);
-      const table = element.closest("table, [role=table], [role=grid]");
-      const tableKey = table ? table.id || `table-${[...document.querySelectorAll("table, [role=table], [role=grid]")].indexOf(table)}` : null;
-      return { index, kind, name, nameSource, bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }, enabled: !(html as HTMLButtonElement).disabled && element.getAttribute("aria-disabled") !== "true", priority: semantic ? 1 : header ? 2 : 3, tableKey, isTableHeader: Boolean(element.closest("th, [role=columnheader]")) };
-    }).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null));
+    const rawCandidates = await this.#page.locator(TARGET_SELECTOR).evaluateAll((elements) => {
+      const interactiveSelector = 'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"], [role="checkbox"], [role="switch"], [tabindex]:not([tabindex="-1"])';
+      const normalize = (value: string | null | undefined): string => value?.trim().replace(/\s+/g, " ") ?? "";
+      const nonSymbolText = (value: string | null | undefined): string => {
+        const normalized = normalize(value);
+        return normalized && !/^[\p{P}\p{S}\s]+$/u.test(normalized) ? normalized : "";
+      };
+      const isVisible = (candidate: Element): boolean => {
+        const bounds = candidate.getBoundingClientRect();
+        const style = window.getComputedStyle(candidate);
+        return bounds.width > 0 && bounds.height > 0 && bounds.right > 0 && bounds.bottom > 0 && bounds.left < window.innerWidth && bounds.top < window.innerHeight && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
+      };
+      const visibleTextFrom = (candidate: Element): string => nonSymbolText((candidate as HTMLElement).innerText);
+      const textFrom = (candidate: Element): string => visibleTextFrom(candidate) || nonSymbolText(candidate.textContent);
+      const labelledByText = (candidate: Element): string => (candidate.getAttribute("aria-labelledby")?.trim().split(/\s+/) ?? [])
+        .map((id) => document.getElementById(id))
+        .filter((label): label is HTMLElement => label instanceof HTMLElement)
+        .map((label) => textFrom(label))
+        .filter(Boolean)
+        .join(" ");
+      const explicitName = (candidate: Element): string => {
+        const html = candidate as HTMLElement;
+        const ariaLabel = normalize(candidate.getAttribute("aria-label"));
+        const labels = candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement || candidate instanceof HTMLSelectElement ? [...(candidate.labels ?? [])].map((label) => normalize(label.innerText)).filter(Boolean).join(" ") : "";
+        const title = normalize(candidate.getAttribute("title"));
+        const placeholder = normalize(html.getAttribute("placeholder"));
+        const ownText = textFrom(candidate);
+        const labelledBy = labelledByText(candidate);
+        return ariaLabel || labels || title || placeholder || ownText || labelledBy;
+      };
+      const nearbyText = (element: Element): string => {
+        const labelledBy = labelledByText(element);
+        if (labelledBy) return labelledBy;
+        if (element.closest("table, [role=table], [role=grid]")) return "";
+        const parent = element.parentElement;
+        if (!parent) return "";
+        const toolbar = element.closest('[role="toolbar"], [role="group"]');
+        const canUseSiblings = toolbar !== null || parent.children.length <= 8;
+        if (canUseSiblings) {
+          const elementIndex = [...parent.children].indexOf(element);
+          const sibling = [...parent.children]
+            .map((candidate, index) => ({ candidate, index, distance: Math.abs(index - elementIndex) }))
+            .filter(({ candidate }) => candidate !== element && isVisible(candidate))
+            .sort((left, right) => left.distance - right.distance)
+            .map(({ candidate }) => {
+              if (candidate.matches(interactiveSelector)) return explicitName(candidate);
+              return toolbar ? textFrom(candidate) : "";
+            })
+            .find(Boolean);
+          if (sibling) return sibling;
+        }
+        if (!toolbar) return "";
+        const toolbarName = labelledByText(toolbar) || explicitName(toolbar);
+        return toolbarName.length <= 80 ? toolbarName : "";
+      };
+      return elements.map((element, index) => {
+        const bounds = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        if (bounds.width <= 0 || bounds.height <= 0 || bounds.right <= 0 || bounds.bottom <= 0 || bounds.left >= window.innerWidth || bounds.top >= window.innerHeight || style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return null;
+        const html = element as HTMLElement;
+        const tag = element.tagName.toLowerCase();
+        const ariaLabel = element.getAttribute("aria-label")?.trim();
+        const labels = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? [...(element.labels ?? [])].map((label) => label.innerText.trim()).filter(Boolean).join(" ") : "";
+        const title = element.getAttribute("title")?.trim();
+        const placeholder = html.getAttribute("placeholder")?.trim();
+        const rawOwnText = html.innerText?.trim().replace(/\s+/g, " ") ?? "";
+        const ownText = /^[\p{P}\p{S}\s]+$/u.test(rawOwnText) ? "" : rawOwnText;
+        const headerElement = element.closest("th, [role=columnheader]");
+        const header = headerElement ? visibleTextFrom(headerElement) : "";
+        const nearby = tag === "button" || element.getAttribute("role") === "button" ? nearbyText(element) : "";
+        const semanticName = ariaLabel || labels || title || placeholder || ownText;
+        const name = semanticName || (header ? `${header} — control` : nearby ? `${nearby} — icon` : "");
+        const nameSource: NameSource = ariaLabel ? "aria" : labels ? "label" : title ? "title" : placeholder ? "placeholder" : header ? "nearby-header" : "nearby-text";
+        const isIconControl = !semanticName && (nameSource === "nearby-header" || nameSource === "nearby-text");
+        const kind: InteractiveKind = tag === "button" || element.getAttribute("role") === "button" ? isIconControl ? "icon-control" : "button" : tag === "a" || element.getAttribute("role") === "link" ? "link" : ["input", "textarea", "select"].includes(tag) ? "input" : "clickable";
+        if (!name) return null;
+        const semantic = Boolean(ariaLabel || labels || title || placeholder || ownText);
+        const table = element.closest("table, [role=table], [role=grid]");
+        const tableKey = table ? table.id || `table-${[...document.querySelectorAll("table, [role=table], [role=grid]")].indexOf(table)}` : null;
+        return { index, kind, name, nameSource, bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }, enabled: !(html as HTMLButtonElement).disabled && element.getAttribute("aria-disabled") !== "true", priority: semantic ? 1 : header ? 2 : 3, tableKey, isTableHeader: Boolean(element.closest("th, [role=columnheader]")) };
+      }).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+    });
     const selected: Candidate[] = [];
     const perTable: Record<string, number> = {};
     for (const candidate of rawCandidates.sort((left, right) => Number(right.isTableHeader) - Number(left.isTableHeader) || left.priority - right.priority)) {
