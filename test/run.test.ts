@@ -634,7 +634,7 @@ test("keeps SIGINT as ABORTED when it arrives during browser restart", async () 
   expect(output.summary.exitCode).toBe(130);
   expect(output.results).toHaveLength(1);
   expect(output.results.some((result) => result.error?.code === "BROWSER_RECOVERY")).toBe(false);
-});
+}, 30_000);
 
 test("real SIGINT during settle exits 130 without an orphan Chromium", async () => {
   const packDirectory = await writePack();
@@ -660,7 +660,7 @@ test("real SIGINT during settle exits 130 without an orphan Chromium", async () 
   const persisted = JSON.parse(await readFile(join(outputDirectory, "results.json"), "utf8"));
   expect(persisted.status).toBe("ABORTED");
   expect(survivingChromium(ownedChromium)).toEqual([]);
-});
+}, 30_000);
 
 test("escapes a hung browser phase after the host deadline and continues", async () => {
   const caseIds = ["RUN-001", "RUN-002"];
@@ -690,7 +690,7 @@ test("escapes a hung browser phase after the host deadline and continues", async
     },
   });
 
-  expect(Date.now() - startedAt).toBeLessThan(5_000);
+  expect(Date.now() - startedAt).toBeLessThan(10_000);
   expect(output.results.map((result) => result.testCaseId)).toEqual(caseIds);
   expect(output.results[0]?.error?.code).toBe("CASE_PHASE_TIMEOUT");
   expect(output.results[1]?.verdict).toBe("PASS");

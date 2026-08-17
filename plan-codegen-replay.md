@@ -1,5 +1,7 @@
 # Replay через генерацию Playwright
 
+Техническая декомпозиция реализации: [`plan-codegen-replay-implementation.md`](plan-codegen-replay-implementation.md).
+
 ## 1. Результат этапа
 
 После approve человек получает обычный Playwright `.spec.ts` и дальше запускает его без модели.

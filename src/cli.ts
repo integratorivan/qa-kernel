@@ -2,13 +2,14 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { discover } from "./discover.js";
+import { codegenRun } from "./codegen.js";
 import { loadPack } from "./pack.js";
 import { htmlDashboard } from "./dashboard.js";
 import { loadAccess, markdownReport, summarize } from "./report.js";
 import { labFromCli } from "./lab.js";
+import { replayPack } from "./replay.js";
 import { runPack } from "./run.js";
 import { resolveModelConfiguration } from "./model.js";
-
 import { parseYaml, SCHEMA_VERSION, validatePack, validateResult, type CaseResult } from "./schema.js";
 
 interface Arguments {
@@ -22,27 +23,35 @@ function parseArguments(argv: readonly string[]): Arguments {
   const [command, ...rest] = argv;
   if (!command) throw new Error("missing command");
   const values: Record<string, string> = {};
-  for (let index = 0; index < rest.length; index += 2) {
+  for (let index = 0; index < rest.length;) {
     const key = rest[index];
+    if (!key?.startsWith("--")) throw new Error(`invalid option near ${key ?? "end of command"}`);
+    const normalized = key.slice(2);
+    if (normalized === "force" && (rest[index + 1] === undefined || rest[index + 1]?.startsWith("--"))) {
+      values[normalized] = "true";
+      index += 1;
+      continue;
+    }
     const value = rest[index + 1];
-    if (!key?.startsWith("--") || !value || value.startsWith("--")) throw new Error(`invalid option near ${key ?? "end of command"}`);
-    values[key.slice(2)] = value;
+    if (!value || value.startsWith("--")) throw new Error(`invalid option near ${key}`);
+    values[normalized] = value;
+    index += 2;
   }
   return { command, values };
 }
-
 function requireOption(values: Record<string, string>, key: string): string {
   const value = values[key];
   if (!value) throw new Error(`--${key} is required`);
   return value;
 }
-
 function usage(): string {
   return [
     "qa discover --url URL --mission TEXT --out PACK/drafts [--pack PACK]",
     "qa validate --pack PACK",
     "qa run --pack PACK --out RUN_DIRECTORY",
     "qa report --run RUN_DIRECTORY",
+    "qa codegen --run RUN_DIRECTORY --out SPECS_DIRECTORY [--force]",
+    "qa replay --pack PACK [--repeat N]",
     "qa lab --pack PACK --out LAB_DIRECTORY [--repeat N]",
   ].join("\n");
 }
@@ -117,6 +126,29 @@ async function execute(command: Arguments): Promise<number> {
     case "report":
       await report(requireOption(command.values, "run"));
       return 0;
+    case "codegen": {
+      const output = await codegenRun({
+        runDirectory: requireOption(command.values, "run"),
+        outputDirectory: requireOption(command.values, "out"),
+        force: command.values.force === "true",
+      });
+      process.stdout.write(`${JSON.stringify({
+        generated: output.items.filter((item) => item.status === "generated").map((item) => item.caseId),
+        skipped: output.items.filter((item) => item.status === "skipped").map((item) => ({ caseId: item.caseId, code: item.code })),
+        errors: output.items.filter((item) => item.status === "error").map((item) => ({ caseId: item.caseId, code: item.code })),
+      })}\n`);
+      return output.exitCode;
+    }
+    case "replay": {
+      const interrupt = interruptController();
+      try {
+        const repeat = command.values.repeat ? Number(command.values.repeat) : 1;
+        if (!Number.isInteger(repeat) || repeat < 1) throw new Error("--repeat must be a positive integer");
+        return await replayPack({ packDirectory: requireOption(command.values, "pack"), repeat, signal: interrupt.controller.signal });
+      } finally {
+        interrupt.dispose();
+      }
+    }
     case "lab": {
       const interrupt = interruptController();
       try {

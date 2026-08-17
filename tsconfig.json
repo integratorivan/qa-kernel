@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "fixtures/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "fixtures/**/*.ts", "playwright.config.ts", "packs/*/specs/**/*.ts"]
 }

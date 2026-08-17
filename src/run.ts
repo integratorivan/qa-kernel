@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { appendNdjson, atomicJson, EvidenceStore, runtimeVersions, SecretRedactor } from "./artifacts.js";
 import { BrowserController, type CaseBrowser } from "./browser.js";
 import { loadPack, secretsForCase, type LoadedPack } from "./pack.js";
+import { RecordingWriter, oracleCovered, readRecording, type CodegenReadiness, type RecordedCheck } from "./recording.js";
 import { extractJsonText } from "./json-text.js";
 import { executePiCase, repairPiResult } from "./pi.js";
 import { openRouterRouting, type ModelConfiguration } from "./model.js";
@@ -112,11 +113,10 @@ async function validateResultEvidence(result: CaseResult, caseId: string, stepId
     await evidence.validate({ caseId, stepId: claim.stepId, evidenceIds: claim.evidenceIds });
   }
 }
-
-async function persistResults(outputDirectory: string, results: readonly CaseResult[], status: RunSummary["status"]): Promise<RunSummary> {
+async function persistResults(outputDirectory: string, results: readonly CaseResult[], status: RunSummary["status"], codegenReadiness: Record<string, CodegenReadiness> = {}): Promise<RunSummary> {
   const summary = summarize(results, status);
   const access = await loadAccess(outputDirectory);
-  await atomicJson(join(outputDirectory, "results.json"), { schemaVersion: SCHEMA_VERSION, status, results, summary });
+  await atomicJson(join(outputDirectory, "results.json"), { schemaVersion: SCHEMA_VERSION, status, results, summary, codegenReadiness });
   await Bun.write(join(outputDirectory, "report.md"), markdownReport(results, summary, access));
   await Bun.write(join(outputDirectory, "dashboard.html"), htmlDashboard(results, summary, access));
   return summary;
@@ -125,6 +125,7 @@ async function persistResults(outputDirectory: string, results: readonly CaseRes
 async function copyApprovedCases(pack: LoadedPack, outputDirectory: string): Promise<void> {
   const destination = join(outputDirectory, "cases");
   await mkdir(destination, { recursive: true });
+  await copyFile(join(pack.directory, "pack.yaml"), join(outputDirectory, "pack.yaml"));
   await Promise.all(pack.cases.map((item) => copyFile(join(pack.directory, "cases", item.file), join(destination, item.file))));
 }
 
@@ -134,6 +135,9 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   const pack = await loadPack(options.packDirectory, environment);
   await mkdir(options.outputDirectory, { recursive: true });
   await copyApprovedCases(pack, options.outputDirectory);
+  const recordingPath = join(options.outputDirectory, "recording.ndjson");
+  const recordingWriter = new RecordingWriter(recordingPath);
+  const codegenReadiness: Record<string, CodegenReadiness> = {};
   const metadata = {
     schemaVersion: SCHEMA_VERSION,
     provider: options.modelConfiguration.provider,
@@ -180,8 +184,9 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
   if (!options.apiKey) {
     status = "ERROR";
     await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), error: "QA_MODEL_API_KEY is required for the configured QA model" });
+    await recordingWriter.close();
     await persistMeta();
-    const summary = await persistResults(options.outputDirectory, results, status);
+    const summary = await persistResults(options.outputDirectory, results, status, codegenReadiness);
     return { results, summary };
   }
 
@@ -218,7 +223,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
             await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_error", caseId: pending.testCase.id, at: new Date().toISOString(), code: "BROWSER_RECOVERY" });
           }
           await persistMeta();
-          await persistResults(options.outputDirectory, results, status);
+          await persistResults(options.outputDirectory, results, status, codegenReadiness);
           break;
         }
       }
@@ -236,7 +241,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
         const evidence = new EvidenceStore(options.outputDirectory, redactor);
         try {
           browser = await executeWithDeadline(
-            async () => await controller.createCase(evidence, loaded.testCase.id),
+            async () => await controller.createCase(evidence, loaded.testCase.id, { recording: recordingWriter, ...(environment[pack.pack.baseUrlFrom] === undefined ? {} : { targetUrl: environment[pack.pack.baseUrlFrom] }), secretRefs: Object.values(loaded.testCase.data), secretValues: [...values.values()], oracle: loaded.testCase.oracle }),
             options.signal,
             Math.max(1, browserPhaseDeadline - Date.now()),
             "CASE_PHASE_TIMEOUT",
@@ -302,13 +307,16 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "oracle_coverage", caseId: loaded.testCase.id, dropped: covered.dropped, at: new Date().toISOString() });
         }
         result = covered.result;
+        await recordingWriter.flush();
+        const recordingEntries = (await readRecording(recordingPath)).entries.filter((entry) => entry.caseId === loaded.testCase.id);
+        codegenReadiness[loaded.testCase.id] = oracleCovered(loaded.testCase, recordingEntries.filter((entry): entry is RecordedCheck => entry.kind === "check"));
         await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "case_completed", caseId: loaded.testCase.id, actions: execution.actions, at: new Date().toISOString() });
       } catch (error) {
         if (options.signal?.aborted) {
           status = "ABORTED";
           metadata.timings.cases[loaded.testCase.id] = Date.now() - caseStartedAt;
           await persistMeta();
-          await persistResults(options.outputDirectory, results, status);
+          await persistResults(options.outputDirectory, results, status, codegenReadiness);
         } else {
           const code = technicalErrorCode(error);
           result = caseError(loaded.testCase.id, error, redactor, code);
@@ -320,7 +328,7 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
           results.push(result);
           const writeCheckpoint = async () => {
             await persistMeta();
-            await persistResults(options.outputDirectory, results, status);
+            await persistResults(options.outputDirectory, results, status, codegenReadiness);
           };
           try {
             await (options.persistCheckpoint ? options.persistCheckpoint(writeCheckpoint) : writeCheckpoint());
@@ -363,12 +371,18 @@ export async function runPack(options: RunOptions): Promise<RunOutput> {
       if (!options.signal?.aborted) status = "ERROR";
       await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), code: "BROWSER_CLEANUP", error: error instanceof Error ? error.message : String(error) }).catch(() => {});
     }
+    try {
+      await recordingWriter.close();
+    } catch (error) {
+      if (!options.signal?.aborted) status = "ERROR";
+      await appendNdjson(join(options.outputDirectory, "events.ndjson"), { type: "run_error", at: new Date().toISOString(), code: "RECORDING_CLOSE", error: error instanceof Error ? error.message : String(error) }).catch(() => {});
+    }
   }
   while (true) {
     const abortedBeforePersist = Boolean(options.signal?.aborted);
     if (abortedBeforePersist) status = "ABORTED";
     await persistMeta();
-    const summary = await persistResults(options.outputDirectory, results, status);
+    const summary = await persistResults(options.outputDirectory, results, status, codegenReadiness);
     if (Boolean(options.signal?.aborted) === abortedBeforePersist) return { results, summary };
   }
 }

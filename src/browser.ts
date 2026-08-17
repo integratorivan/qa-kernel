@@ -1,5 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request } from "playwright";
 import { EvidenceStore, type Evidence } from "./artifacts.js";
+import { containsSecretLike, groundingMatches, type RecordedAction, type RecordedCheck, type RecordedLocator, type RecordingWriter } from "./recording.js";
 
 const TARGET_SELECTOR = 'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"], [role="checkbox"], [role="switch"], [tabindex]:not([tabindex="-1"])';
 const MAX_INTERACTIVE_TARGETS = 60;
@@ -63,7 +64,6 @@ export interface ActionResult {
   warnings: string[];
   error: { code: string; message: string } | null;
 }
-
 interface Candidate {
   index: number;
   kind: InteractiveKind;
@@ -74,6 +74,9 @@ interface Candidate {
   priority: number;
   tableKey: string | null;
   isTableHeader: boolean;
+  role: string;
+  testId: string | null;
+  placeholder: string | null;
 }
 
 interface NetworkEntry {
@@ -93,6 +96,9 @@ interface SnapshotCapture {
 
 interface SnapshotTarget {
   locator: Locator;
+  locatorCandidates: RecordedLocator[];
+  sourceSnapshotId: string;
+  frame: "main";
   domVersion: number;
 }
 
@@ -241,6 +247,13 @@ async function forceCloseOwnedBrowser(browser: Browser | null, ownedProcesses: R
   live = await waitForProcessExit(owned, 1_000);
   if (live.length > 0) throw new Error(`Chromium processes survived cleanup: ${live.map((item) => item.pid).join(", ")}`);
 }
+export interface CaseBrowserOptions {
+  recording?: RecordingWriter;
+  targetUrl?: string | undefined;
+  secretRefs?: readonly string[];
+  secretValues?: readonly string[];
+  oracle?: { expect: readonly string[]; reject: readonly string[] };
+}
 
 export type Screenshotter = (page: Page) => Promise<Buffer>;
 
@@ -301,7 +314,7 @@ export class BrowserController {
     }
   }
 
-  async createCase(evidence: EvidenceStore, caseId: string): Promise<CaseBrowser> {
+  async createCase(evidence: EvidenceStore, caseId: string, options: CaseBrowserOptions = {}): Promise<CaseBrowser> {
     if (!this.#browser) throw new Error("Chromium has not been started");
     const context = await this.#browser.newContext();
     await context.addInitScript(() => {
@@ -311,7 +324,7 @@ export class BrowserController {
       }).observe(document, { childList: true, subtree: true, characterData: true });
     });
     const page = await context.newPage();
-    return new CaseBrowser(context, page, this.allowedOrigins, evidence, caseId, this.screenshot);
+    return new CaseBrowser(context, page, this.allowedOrigins, evidence, caseId, this.screenshot, options);
   }
 
   async close(): Promise<void> {
@@ -352,6 +365,14 @@ export class BrowserController {
   }
 }
 
+export interface CheckResult {
+  kind: "url" | "text" | "locator";
+  status: "passed" | "failed" | "unbound";
+  pathname?: string;
+  visible?: boolean;
+  errorCode?: string;
+}
+
 export class CaseBrowser {
   readonly #page: Page;
   readonly #ledger: NetworkEntry[] = [];
@@ -359,11 +380,12 @@ export class CaseBrowser {
   #secretTargets: Locator[] = [];
   #snapshotOrdinal = 0;
   #actionOrdinal = 0;
+  #checkOrdinal = 0;
   #actionQueue: Promise<void> = Promise.resolve();
   readonly #successfulInteractions = new Set<string>();
   readonly #networkProgress = new Map<string, string>();
 
-  constructor(private readonly context: BrowserContext, page: Page, private readonly allowedOrigins: ReadonlySet<string>, private readonly evidence: EvidenceStore, private readonly caseId: string, private readonly screenshot: Screenshotter) {
+  constructor(private readonly context: BrowserContext, page: Page, private readonly allowedOrigins: ReadonlySet<string>, private readonly evidence: EvidenceStore, private readonly caseId: string, private readonly screenshot: Screenshotter, private readonly options: CaseBrowserOptions = {}) {
     this.#page = page;
     context.on("request", (request) => this.#ledger.push({ request, startedAt: Date.now(), finishedAt: null, status: null, failure: null, recordable: isRecordableRequest(request, allowedOrigins), settleEligible: isSettleEligibleRequest(request, allowedOrigins) }));
     context.on("response", (response) => {
@@ -382,51 +404,147 @@ export class CaseBrowser {
       }
     });
   }
-
   async open(url: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    return this.#act("open", stepId, signal, async () => {
+    return this.#act("open", stepId, signal, null, null, async () => {
       const origin = new URL(url).origin;
       if (!this.allowedOrigins.has(origin)) throw new Error(`origin ${origin} is not allowed`);
       await this.#page.goto(url, { waitUntil: "domcontentloaded" });
     });
   }
-
   async click(ref: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = await this.#target(ref);
-    return this.#act("click", stepId, signal, async () => {
+    const target = this.#targets.get(ref) ?? null;
+    if (!target && !this.options.recording) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+    return this.#act("click", stepId, signal, target, ref, async () => {
+      if (!target) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
       await this.#assertTargetCurrent(target, ref);
       await target.locator.click();
     });
   }
-
   async fill(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = await this.#target(ref);
-    return this.#act("fill", stepId, signal, async () => {
+    const target = this.#targets.get(ref) ?? null;
+    if (!target && !this.options.recording) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+    return this.#act("fill", stepId, signal, target, ref, async () => {
+      if (!target) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
       await this.#assertTargetCurrent(target, ref);
       await target.locator.fill(value);
-    });
-  }
-  async fillSecret(ref: string, value: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = await this.#target(ref);
-    this.#secretTargets.push(target.locator);
-    return this.#act("fill", stepId, signal, async () => {
-      await this.#assertTargetCurrent(target, ref);
-      await target.locator.fill(value);
-    });
+    }, null, value);
   }
 
+  async fillSecret(ref: string, value: string, fromOrStepId: string, stepIdOrSignal?: string | AbortSignal, signal?: AbortSignal): Promise<ActionResult> {
+    const from = typeof stepIdOrSignal === "string" ? fromOrStepId : this.options.secretRefs?.length === 1 ? this.options.secretRefs[0]! : null;
+    const stepId = typeof stepIdOrSignal === "string" ? stepIdOrSignal : fromOrStepId;
+    const actionSignal = typeof stepIdOrSignal === "string" ? signal : stepIdOrSignal;
+    const target = this.#targets.get(ref) ?? null;
+    if (!target && !this.options.recording) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+    if (target) this.#secretTargets.push(target.locator);
+    return this.#act("fill", stepId, actionSignal, target, ref, async () => {
+      if (!target) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+      await this.#assertTargetCurrent(target, ref);
+      await target.locator.fill(value);
+    }, from, null);
+  }
 
   async press(ref: string, key: string, stepId: string, signal?: AbortSignal): Promise<ActionResult> {
-    const target = await this.#target(ref);
-    return this.#act("press", stepId, signal, async () => {
-      await this.#assertTargetCurrent(target, ref);
+    const target = this.#targets.get(ref) ?? null;
+    if (!target && !this.options.recording) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+    return this.#act("press", stepId, signal, target, ref, async () => {
+      if (!target) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
       await target.locator.press(key);
-    });
+    }, null, null, key);
+  }
+  async checkUrl(path: string, state: "equals" | "notEquals", stepId: string, oracleList: "expect" | "reject", oracleIndex: number, signal?: AbortSignal): Promise<CheckResult> {
+    const ordinal = ++this.#checkOrdinal;
+    const groundingText = path;
+    const oracle = this.options.oracle?.[oracleList]?.[oracleIndex];
+    let status: RecordedCheck["status"] = oracle && groundingMatches(oracle, path) ? "failed" : "unbound";
+    let pathname: string | undefined;
+    let errorCode: string | undefined;
+    if (status !== "unbound") {
+      try {
+        if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+        await this.#boundedCheck(async () => {
+          pathname = new URL(this.#page.url()).pathname;
+          if ((state === "equals" && pathname !== path) || (state === "notEquals" && pathname === path)) throw new Error("CHECK_MISMATCH");
+        }, signal);
+        status = "passed";
+      } catch (error) {
+        status = "failed";
+        errorCode = error instanceof Error ? error.message : "CHECK_FAILED";
+      }
+    }
+    await this.#recordCheck({ schemaVersion: 1, kind: "check", caseId: this.caseId, stepId, checkOrdinal: ordinal, oracle: { list: oracleList, index: oracleIndex }, check: "url", path, state, groundingText, status });
+    return { kind: "url", status, ...(pathname === undefined ? {} : { pathname }), ...(errorCode === undefined ? {} : { errorCode }) };
   }
 
+  async checkText(text: string, state: "visible" | "hidden", stepId: string, oracleList: "expect" | "reject", oracleIndex: number, signal?: AbortSignal): Promise<CheckResult> {
+    const ordinal = ++this.#checkOrdinal;
+    const oracle = this.options.oracle?.[oracleList]?.[oracleIndex];
+    let status: RecordedCheck["status"] = oracle && groundingMatches(oracle, text) ? "failed" : "unbound";
+    let errorCode: string | undefined;
+    if (status !== "unbound") {
+      try {
+        await this.#boundedCheck(() => this.#page.getByText(text, { exact: true }).waitFor({ state, timeout: 5_000 }), signal);
+        status = "passed";
+      } catch (error) {
+        status = "failed";
+        errorCode = error instanceof Error ? error.message : "CHECK_FAILED";
+      }
+    }
+    await this.#recordCheck({ schemaVersion: 1, kind: "check", caseId: this.caseId, stepId, checkOrdinal: ordinal, oracle: { list: oracleList, index: oracleIndex }, check: "text", text, exact: true, state, groundingText: text, status });
+    return { kind: "text", status, ...(errorCode === undefined ? {} : { errorCode }) };
+  }
+
+  async checkLocator(locator: RecordedLocator, state: "visible" | "hidden", stepId: string, oracleList: "expect" | "reject", oracleIndex: number, signal?: AbortSignal): Promise<CheckResult> {
+    const ordinal = ++this.#checkOrdinal;
+    const actual = this.#locator(locator);
+    const groundingText = await this.#groundingForLocator(locator, actual);
+    const oracle = this.options.oracle?.[oracleList]?.[oracleIndex];
+    let status: RecordedCheck["status"] = oracle && groundingMatches(oracle, groundingText) ? "failed" : "unbound";
+    let errorCode: string | undefined;
+    if (status !== "unbound") {
+      try {
+        await this.#boundedCheck(() => actual.waitFor({ state, timeout: 5_000 }), signal);
+        status = "passed";
+      } catch (error) {
+        status = "failed";
+        errorCode = error instanceof Error ? error.message : "CHECK_FAILED";
+      }
+    }
+    await this.#recordCheck({ schemaVersion: 1, kind: "check", caseId: this.caseId, stepId, checkOrdinal: ordinal, oracle: { list: oracleList, index: oracleIndex }, check: "locator", locator, state, groundingText, status });
+    return { kind: "locator", status, visible: status === "passed" && state === "visible", ...(errorCode === undefined ? {} : { errorCode }) };
+  }
+
+  async #boundedCheck(work: () => Promise<void>, signal?: AbortSignal): Promise<void> {
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHECK_TIMEOUT")), 5_000));
+    if (!signal) {
+      await Promise.race([work(), timeout]);
+      return;
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("aborted");
+    await Promise.race([work(), timeout, new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), { once: true }))]);
+  }
+
+  async #groundingForLocator(locator: RecordedLocator, actual: Locator): Promise<string> {
+    if (locator.kind !== "testId") return locator.kind === "role" ? locator.name : locator.value;
+    return await actual.evaluate((element) => {
+      const html = element as HTMLElement;
+      const labels = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? [...(element.labels ?? [])].map((label) => label.innerText.trim()).filter(Boolean).join(" ") : "";
+      return element.getAttribute("aria-label")?.trim() || labels || html.innerText?.trim() || element.textContent?.trim() || "";
+    }).catch(() => "");
+  }
+
+  async #recordCheck(check: RecordedCheck): Promise<void> {
+    if (!this.options.recording) return;
+    await this.options.recording.append(check);
+  }
+
+
+
+
   async scroll(stepId: string, deltaY: number, signal?: AbortSignal, ref?: string): Promise<ActionResult> {
-    const target = ref ? await this.#target(ref) : null;
-    return this.#act("scroll", stepId, signal, async () => {
+    const target = ref ? this.#targets.get(ref) ?? null : null;
+    if (ref && !target && !this.options.recording) throw new Error(`stale or unknown target ref ${ref}; request a fresh snapshot`);
+    return this.#act("scroll", stepId, signal, target, ref ?? null, async () => {
       if (!target) {
         await this.#page.mouse.wheel(0, deltaY);
         await this.#page.evaluate(() => {
@@ -487,16 +605,38 @@ export class CaseBrowser {
     return this.#networkProgress.get(result.actionId) ?? "[]";
   }
 
-  async #act(kind: "open" | "click" | "fill" | "press" | "scroll", stepId: string, signal: AbortSignal | undefined, operation: () => Promise<void>): Promise<ActionResult> {
+  async #awaitWithAbort<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+    const pending = Promise.resolve().then(work);
+    if (!signal) return pending;
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason ?? new Error("aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    if (signal.aborted) {
+      pending.catch(() => {});
+      throw signal.reason ?? new Error("aborted");
+    }
+    try {
+      return await Promise.race([pending, aborted]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      pending.catch(() => {});
+    }
+  }
+
+  async #act(kind: "open" | "click" | "fill" | "press" | "scroll", stepId: string, signal: AbortSignal | undefined, target: SnapshotTarget | null, ref: string | null, operation: () => Promise<void>, from: string | null = null, value: string | null = null, key: string | null = null, deltaY: number | null = null): Promise<ActionResult> {
     const previousAction = this.#actionQueue;
     let releaseAction!: () => void;
     this.#actionQueue = new Promise<void>((resolve) => { releaseAction = resolve; });
-    await previousAction;
     try {
+      await this.#awaitWithAbort(() => previousAction, signal);
       const actionOrdinal = ++this.#actionOrdinal;
       const actionId = `act-${actionOrdinal}`;
       const warnings: string[] = [];
-      const before = await this.#capture(stepId, "before", warnings);
+      const before = await this.#awaitWithAbort(() => this.#capture(stepId, "before", warnings), signal);
+      const stableLocator = target && ref ? await this.#awaitWithAbort(() => this.#stableLocator(target), signal) : null;
       const watermark = Date.now();
       let actionStatus: ActionResult["actionStatus"] = "ok";
       let error: ActionResult["error"] = null;
@@ -520,6 +660,7 @@ export class CaseBrowser {
       await this.#waitForAttributionWindow(actionEndedAt, signal);
       const network = await this.#recordNetwork(stepId, actionOrdinal, watermark, actionEndedAt);
       this.#networkProgress.set(actionId, network.progress);
+      await this.#recordAction({ schemaVersion: 1, kind: "action", caseId: this.caseId, stepId, actionOrdinal, action: kind, frame: target?.frame ?? "main", sourceSnapshotId: target?.sourceSnapshotId ?? null, locator: stableLocator, url: kind === "open" ? this.#recordedPath(this.#page.url()) : null, from, value: this.#safeRecordedValue(value), key, deltaY, actionStatus, observationStatus: after ? settled : "failed" });
       const networks = network.evidence;
       return { actionId, actionStatus, observationStatus: after ? settled : "failed", beforeEvidenceIds: before.evidence.map((item) => item.id), afterEvidenceIds: after?.evidence.map((item) => item.id) ?? [], networkEvidenceIds: networks.map((item) => item.id), observation: after?.observation ?? null, warnings, error };
     } finally {
@@ -610,7 +751,7 @@ export class CaseBrowser {
         const semantic = Boolean(ariaLabel || labels || title || placeholder || ownText);
         const table = element.closest("table, [role=table], [role=grid]");
         const tableKey = table ? table.id || `table-${[...document.querySelectorAll("table, [role=table], [role=grid]")].indexOf(table)}` : null;
-        return { index, kind, name, nameSource, bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }, enabled: !(html as HTMLButtonElement).disabled && element.getAttribute("aria-disabled") !== "true", priority: semantic ? 1 : header ? 2 : 3, tableKey, isTableHeader: Boolean(element.closest("th, [role=columnheader]")) };
+        return { index, kind, name, nameSource, bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }, enabled: !(html as HTMLButtonElement).disabled && element.getAttribute("aria-disabled") !== "true", priority: semantic ? 1 : header ? 2 : 3, tableKey, isTableHeader: Boolean(element.closest("th, [role=columnheader]")), role: element.getAttribute("role") || (tag === "button" ? "button" : tag === "a" ? "link" : ["input", "textarea"].includes(tag) ? "textbox" : tag), testId: element.getAttribute("data-testid"), placeholder: placeholder || null };
       }).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
     });
     const selected: Candidate[] = [];
@@ -627,7 +768,7 @@ export class CaseBrowser {
     const domVersion = await this.#page.evaluate(() => Number(document.documentElement.dataset.qaDomVersion ?? "0"));
     const interactive = selected.map((candidate, index) => {
       const ref = `s${snapshotOrdinal}-e${index + 1}`;
-      this.#targets.set(ref, { locator: this.#page.locator(TARGET_SELECTOR).nth(candidate.index), domVersion });
+      this.#targets.set(ref, { locator: this.#page.locator(TARGET_SELECTOR).nth(candidate.index), locatorCandidates: this.#locatorCandidates(candidate), sourceSnapshotId: "", frame: "main", domVersion });
       return { ref, kind: candidate.kind, name: this.evidence.redactText(candidate.name), nameSource: candidate.nameSource, bounds: candidate.bounds, enabled: candidate.enabled };
     });
     const visibleText = this.evidence.redactText(await this.#page.locator("body").innerText());
@@ -644,6 +785,7 @@ export class CaseBrowser {
     const modelVisible = truncateForModel(visibleText, VISIBLE_TEXT_MAX_CHARS);
     const snapshotContent = JSON.stringify({ url: safeUrl, visibleText, aria: safeAria, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, scroll }, null, 2);
     const snapshot = await this.evidence.record({ caseId: this.caseId, stepId, actionOrdinal: this.#actionOrdinal, phase, kind: "snapshot", url: safeUrl, extension: "json", content: snapshotContent });
+    for (const target of this.#targets.values()) target.sourceSnapshotId = snapshot.id;
     const screenshotId = screenshot?.id ?? "";
     if (!screenshotId) warnings.push("screenshot capture failed");
     return { observation: { snapshotId: snapshot.id, screenshotId, url: safeUrl, visibleText: modelVisible.text, aria: modelAria.text, interactive, interactiveTruncated: rawCandidates.length > selected.length, omittedCount: rawCandidates.length - selected.length, ariaTruncated: modelAria.truncated, visibleTextTruncated: modelVisible.truncated, scroll }, evidence: screenshot ? [snapshot, screenshot] : [snapshot] };
@@ -671,6 +813,68 @@ export class CaseBrowser {
       }));
     }
   }
+  #locatorCandidates(candidate: Candidate): RecordedLocator[] {
+    const candidates: RecordedLocator[] = [];
+    if (candidate.testId) candidates.push({ kind: "testId", value: candidate.testId });
+    if (candidate.nameSource === "label") candidates.push({ kind: "label", value: candidate.name });
+    if (candidate.role && candidate.name) candidates.push({ kind: "role", role: candidate.role, name: candidate.name });
+    if (candidate.placeholder) candidates.push({ kind: "placeholder", value: candidate.placeholder });
+    if ((candidate.kind === "button" || candidate.kind === "link") && candidate.name) candidates.push({ kind: "text", value: candidate.name });
+    return candidates;
+  }
+
+  async #stableLocator(target: SnapshotTarget): Promise<RecordedLocator | null> {
+    const ephemeral = await target.locator.elementHandle().catch(() => null);
+    if (!ephemeral) return null;
+    for (const candidate of target.locatorCandidates) {
+      const locator = this.#locator(candidate);
+      try {
+        if (await locator.count() !== 1) continue;
+        const handle = await locator.elementHandle();
+        if (!handle) continue;
+        const same = await locator.evaluate((element, other) => element === other, ephemeral);
+        await handle.dispose();
+        if (same) return candidate;
+      } catch {
+        continue;
+      }
+    }
+    await ephemeral.dispose();
+    return null;
+  }
+
+  #locator(locator: RecordedLocator): Locator {
+    switch (locator.kind) {
+      case "testId": return this.#page.getByTestId(locator.value);
+      case "label": return this.#page.getByLabel(locator.value, { exact: true });
+      case "role": return this.#page.getByRole(locator.role as Parameters<Page["getByRole"]>[0], { name: locator.name, exact: true });
+      case "placeholder": return this.#page.getByPlaceholder(locator.value, { exact: true });
+      case "text": return this.#page.getByText(locator.value, { exact: true });
+    }
+  }
+
+  #recordedPath(url: string): string | null {
+    try {
+      const parsed = new URL(url);
+      const target = this.options.targetUrl ? new URL(this.options.targetUrl) : null;
+      if (target && parsed.origin !== target.origin) return parsed.toString();
+      return `${parsed.pathname || "/"}${parsed.search}`;
+    } catch {
+      return null;
+    }
+  }
+
+  #safeRecordedValue(value: string | null): string | null {
+    if (value === null) return null;
+    if (containsSecretLike(value, this.options.secretValues ?? [])) return null;
+    return value;
+  }
+
+  async #recordAction(action: RecordedAction): Promise<void> {
+    if (!this.options.recording) return;
+    await this.options.recording.append(action);
+  }
+
 
   async #target(ref: string): Promise<SnapshotTarget> {
     const target = this.#targets.get(ref);

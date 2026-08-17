@@ -17,12 +17,10 @@ steps:
 oracle:
   source: product-requirement
   expect:
-    - The authenticated cabinet is visible
-    - The interface displays the signed-in state
-    - The authentication request succeeds
+    - Exact text "Fixture cabinet" is visible
+    - Exact text "Signed in as test user" is visible
   reject:
-    - The sign-in form remains without an explanation
-    - An authentication error is displayed
-    - The cabinet renders an error or blank screen
+    - Heading "Sign in" is visible
+    - Exact text "Authentication failed" is visible
 safety:
   mutation: none

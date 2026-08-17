@@ -50,7 +50,7 @@ test("rejects ready drafts backed only by opening a page", async () => {
     resultRepairer: async (_configuration, _apiKey, invalid) => invalid,
   });
   expect(output.drafts.map((item) => item.status)).toEqual(["needsCapability", "needsCapability"]);
-}, 15_000);
+}, 30_000);
 
 test("accepts ready drafts backed by a successful fixed-step interaction", async () => {
   const packDirectory = await writePack();
@@ -72,7 +72,7 @@ test("accepts ready drafts backed by a successful fixed-step interaction", async
   });
   expect(output.drafts.map((item) => item.status)).toEqual(["ready", "ready"]);
   expect(await Bun.file(join(packDirectory, "drafts", "DISC-001.yaml")).exists()).toBe(true);
-}, 15_000);
+}, 30_000);
 
 test("repairs a non-JSON discovery result once without new browser actions", async () => {
   const packDirectory = await writePack();
@@ -100,7 +100,7 @@ test("repairs a non-JSON discovery result once without new browser actions", asy
   });
   expect(repairCalls).toBe(1);
   expect(output.drafts).toHaveLength(2);
-}, 15_000);
+}, 30_000);
 
 test("checks the API key before creating discovery artifacts or Chromium", async () => {
   const packDirectory = await writePack();

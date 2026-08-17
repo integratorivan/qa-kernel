@@ -1,7 +1,7 @@
 const port = Number(process.env.QA_FIXTURE_PORT ?? "3100");
 const validEmail = process.env.QA_EMAIL ?? "qa@example.test";
 const validPassword = process.env.QA_PASSWORD ?? "fixture-password";
-
+const cabinetMarker = process.env.QA_FIXTURE_BROKEN_MARKER === "1" ? "Broken cabinet" : "Fixture cabinet";
 const rows = Array.from({ length: 100 }, (_, index) => `<tr><td><button type="button">SKU-${index + 1}</button></td><td>Product ${index + 1}</td></tr>`).join("");
 const page = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Fixture B2B cabinet</title></head>
@@ -14,7 +14,7 @@ const page = `<!doctype html>
     <p id="login-error" role="alert"></p>
   </main>
   <main id="cabinet" hidden>
-    <h1>Fixture cabinet</h1>
+    <h1>${cabinetMarker}</h1>
     <p id="authenticated-state">Signed in as test user</p>
     <nav><button type="button" data-section="overview">Overview</button><button type="button" data-section="reports">Reports</button><button type="button" data-section="products">Products</button></nav>
     <section id="section"><h2>Overview</h2><p>Read-only account summary</p></section>

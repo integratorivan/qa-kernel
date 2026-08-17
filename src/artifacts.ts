@@ -38,6 +38,10 @@ export class SecretRedactor {
     this.#secrets = [...values].filter((value) => value.length > 0).sort((a, b) => b.length - a.length);
   }
 
+  containsSecret(value: string): boolean {
+    return this.#secrets.some((secret) => value.includes(secret));
+  }
+
   redact(value: string): string {
     return this.#secrets.reduce((redacted, secret) => redacted.replaceAll(secret, "[REDACTED]"), value);
   }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ARIA_MAX_CHARS, BrowserController, truncateForModel, VISIBLE_TEXT_MAX_CHARS } from "../src/browser.js";
 import { EvidenceStore, SecretRedactor } from "../src/artifacts.js";
-
+import { RecordingWriter, readRecording } from "../src/recording.js";
 let server: Bun.Server<unknown>;
 let controller: BrowserController;
 let origin = "";
@@ -290,6 +290,24 @@ describe("browser controller", () => {
     await browser.close();
   }, 10_000);
 
+  test("rejects and does not record a literal secret passed through fill", async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "qa-browser-secret-"));
+    const secret = "plain-secret-sentinel";
+    const recording = new RecordingWriter(join(temporaryDirectory, "recording.ndjson"));
+    const evidence = new EvidenceStore(temporaryDirectory, new SecretRedactor([secret]));
+    const browser = await controller.createCase(evidence, "B2B-001", { recording, secretValues: [secret] });
+    try {
+      await browser.open(`${origin}/`, "open-page");
+      const observation = await browser.snapshot("inspect");
+      const email = observation.interactive.find((target) => target.name === "Email");
+      await expect(browser.fill(email!.ref, secret, "fill-email")).rejects.toThrow("fill must contain exactly one of from/value");
+      await recording.close();
+      const persisted = await readRecording(join(temporaryDirectory, "recording.ndjson"));
+      expect(JSON.stringify(persisted.entries)).not.toContain(secret);
+    } finally {
+      await browser.close();
+    }
+  }, 10_000);
   test("truncates model-facing snapshot text and keeps the full evidence file", async () => {
     expect(truncateForModel("short", 80).truncated).toBe(false);
     const huge = `${"marker-line\n".repeat(8)}${"x".repeat(ARIA_MAX_CHARS)}`;

@@ -39,14 +39,24 @@ bun run qa validate --pack packs/fixture-smoke
 bun run qa discover --url "$TARGET_URL" --mission "Check sign-in and cabinet navigation" --out packs/fixture-smoke/drafts
 # Manually review and move approved YAML from drafts/ to cases/
 bun run qa run --pack packs/fixture-smoke --out .qa/runs/local-fixture
+bun run qa codegen --run .qa/runs/local-fixture --out packs/fixture-smoke/specs
+bun run qa replay --pack packs/fixture-smoke --repeat 10
 bun run qa report --run .qa/runs/local-fixture
 ```
 
-For the same loop without assembling flags, `bun run tui` is a local menu over those commands: it loads `.env`, can start the fixture, runs `validate` / `discover` / `run` / `report`, and moves selected YAML from `drafts/` to `cases/`. It is not the product UI.
+The workflow has three explicit phases:
+
+1. **Model-driven recording (`qa run`)**: the approved YAML case runs once with Pi. The host writes `recording.ndjson`, immutable `pack.yaml`/case copies, evidence, verdicts, and host-owned `codegenReadiness`.
+2. **Deterministic codegen (`qa codegen`)**: a PASS case with complete grounded typed checks becomes `packs/<pack>/specs/<caseId>.spec.ts`. Codegen uses no model, CSS/XPath fallback, or kernel runtime import. Existing specs require `--force` to replace.
+3. **Model-free replay (`qa replay`)**: local Playwright Test executes generated specs without reading YAML/recording and without `QA_MODEL_API_KEY`. Playwright owns pass/fail, report, trace, and failure screenshots.
+
+`qa replay` does not diagnose or heal a failure. Diagnose/heal, mutations, cleanup, iframes, cross-origin flows, network assertions, and CRUD remain future stages.
+
+For the same recording loop without assembling flags, `bun run tui` is a local menu over `validate` / `discover` / `run` / `report`; codegen and replay remain explicit commands.
 
 `run` creates a new browser context and isolated Pi session per case. `report` reads only saved `results.json`; it does not invoke a model.
 
-The fixture pack intentionally contains one known PASS (`FIXTURE-001`, valid sign-in) and one known FAIL (`FIXTURE-002`, reports return HTTP 500). This pair is the live-model acceptance gate; unit stubs do not count as proof of those verdicts.
+The fixture pack intentionally contains one known PASS (`FIXTURE-001`, valid sign-in) and one known FAIL (`FIXTURE-002`, reports return HTTP 500). The live model acceptance gate requires a configured provider key; codegen/replay acceptance can run from a synthetic or host-owned recording without a model key.
 
 ## Safety contract
 

@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { atomicJson } from "./artifacts.js";
+import { cleanupProcessGroup, signalProcessGroup } from "./child-process.js";
 import { htmlLabDashboard, htmlMissingRunDashboard, type LabDashboardRow } from "./dashboard.js";
 import { resolveModelConfiguration, type ModelConfiguration } from "./model.js";
 import { loadPack } from "./pack.js";
@@ -55,35 +56,6 @@ async function forwardOutput(stream: ReadableStream<Uint8Array>, destination: No
   }
 }
 
-function signalProcessGroup(pid: number, signal: NodeJS.Signals, fallback: () => void): void {
-  try {
-    if (process.platform === "win32") fallback();
-    else process.kill(-pid, signal);
-  } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? error.code : null;
-    if (code !== "ESRCH") throw error;
-  }
-}
-
-function processGroupMembers(groupId: number): number[] {
-  if (process.platform === "win32") return [];
-  const output = Bun.spawnSync(["ps", "-axo", "pid=,pgid="]).stdout.toString();
-  return output.split("\n").flatMap((line) => {
-    const [pidText, groupText] = line.trim().split(/\s+/, 2);
-    return Number(groupText) === groupId && Number(pidText) > 1 ? [Number(pidText)] : [];
-  });
-}
-
-async function cleanupProcessGroup(pid: number, fallback: () => void): Promise<number[]> {
-  if (processGroupMembers(pid).length === 0) return [];
-  signalProcessGroup(pid, "SIGTERM", fallback);
-  const deadline = Date.now() + 1_000;
-  while (processGroupMembers(pid).length > 0 && Date.now() < deadline) await Bun.sleep(25);
-  if (processGroupMembers(pid).length > 0) signalProcessGroup(pid, "SIGKILL", fallback);
-  const killDeadline = Date.now() + 1_000;
-  while (processGroupMembers(pid).length > 0 && Date.now() < killDeadline) await Bun.sleep(25);
-  return processGroupMembers(pid);
-}
 
 export function markLabAborted(runs: LabRun[], repeat: number): void {
   if (repeat <= 0 || runs.some((run) => run.status === "ABORTED")) return;

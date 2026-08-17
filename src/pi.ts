@@ -5,6 +5,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createAgentSession, createExtensionRuntime, defineTool, getLastAssistantUsage, ModelRuntime, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { CaseBrowser, Observation } from "./browser.js";
+import type { RecordedLocator } from "./recording.js";
 import { accessLine, sanitizeAccessEvent, type AccessSink } from "./access.js";
 import { RESULT_JSON_SCHEMA } from "./contracts.js";
 import { openRouterRouting, type ModelConfiguration } from "./model.js";
@@ -15,7 +16,7 @@ const MAX_ACTIONS = 25;
 const CASE_TIMEOUT_MS = 5 * 60_000;
 const FINALIZATION_TIMEOUT_MS = 30_000;
 const models = builtinModels();
-export const MODEL_BROWSER_ACTIONS = ["open", "snapshot", "click", "fill", "press", "scroll", "screenshot"] as const;
+export const MODEL_BROWSER_ACTIONS = ["open", "snapshot", "click", "fill", "press", "scroll", "screenshot", "checkUrl", "checkText", "checkLocator"] as const;
 
 export type BrowserLimitReason = "action_limit" | "time_limit" | "no_progress";
 
@@ -261,6 +262,15 @@ function browserTool(input: PiCaseRuntimeInput, actionGuard: BrowserActionGuard,
       from: Type.Optional(Type.String()),
       key: Type.Optional(Type.String()),
       deltaY: Type.Optional(Type.Number()),
+      path: Type.Optional(Type.String()),
+      state: Type.Optional(Type.String()),
+      oracleList: Type.Optional(Type.String()),
+      oracleIndex: Type.Optional(Type.Number()),
+      text: Type.Optional(Type.String()),
+      locatorKind: Type.Optional(Type.String()),
+      locatorValue: Type.Optional(Type.String()),
+      role: Type.Optional(Type.String()),
+      name: Type.Optional(Type.String()),
     }),
     execute: async (_id, parameters) => {
       if (input.signal.aborted) throw input.signal.reason ?? new Error("case cancelled");
@@ -291,7 +301,7 @@ function browserTool(input: PiCaseRuntimeInput, actionGuard: BrowserActionGuard,
           if (parameters.from) {
             const secret = input.secretValues.get(parameters.from);
             if (!secret) throw new Error(`secret reference ${parameters.from} is not approved`);
-            result = await input.browser.fillSecret(ref, secret, stepId, input.signal);
+            result = await input.browser.fillSecret(ref, secret, parameters.from, stepId, input.signal);
           } else {
             result = await input.browser.fill(ref, requireText(parameters.value, "value"), stepId, input.signal);
           }
@@ -302,6 +312,42 @@ function browserTool(input: PiCaseRuntimeInput, actionGuard: BrowserActionGuard,
           break;
         case "scroll":
           result = await input.browser.scroll(stepId, parameters.deltaY ?? 600, input.signal, parameters.ref);
+          break;
+        case "checkUrl": {
+          const list = parameters.oracleList;
+          const index = Number(parameters.oracleIndex);
+          if (list !== "expect" && list !== "reject") throw new Error("browser.oracleList must be expect or reject");
+          if (!Number.isInteger(index) || index < 0) throw new Error("browser.oracleIndex must be a non-negative integer");
+          const state = parameters.state;
+          if (state !== "equals" && state !== "notEquals") throw new Error("browser.checkUrl.state is invalid");
+          result = await input.browser.checkUrl(requireText(parameters.path, "path"), state, stepId, list, index, input.signal);
+          break;
+        }
+        case "checkText": {
+          const list = parameters.oracleList;
+          const index = Number(parameters.oracleIndex);
+          if (list !== "expect" && list !== "reject") throw new Error("browser.oracleList must be expect or reject");
+          if (!Number.isInteger(index) || index < 0) throw new Error("browser.oracleIndex must be a non-negative integer");
+          const state = parameters.state;
+          if (state !== "visible" && state !== "hidden") throw new Error("browser.checkText.state is invalid");
+          result = await input.browser.checkText(requireText(parameters.text, "text"), state, stepId, list, index, input.signal);
+          break;
+        }
+        case "checkLocator": {
+          const list = parameters.oracleList;
+          const index = Number(parameters.oracleIndex);
+          if (list !== "expect" && list !== "reject") throw new Error("browser.oracleList must be expect or reject");
+          if (!Number.isInteger(index) || index < 0) throw new Error("browser.oracleIndex must be a non-negative integer");
+          const state = parameters.state;
+          if (state !== "visible" && state !== "hidden") throw new Error("browser.checkLocator.state is invalid");
+          const kind = parameters.locatorKind;
+          let locator: RecordedLocator;
+          if (kind === "testId" || kind === "label" || kind === "placeholder" || kind === "text") locator = { kind, value: requireText(parameters.locatorValue, "locatorValue") };
+          else if (kind === "role") locator = { kind: "role", role: requireText(parameters.role, "role"), name: requireText(parameters.name, "name") };
+          else throw new Error("browser.checkLocator.locatorKind is invalid");
+          result = await input.browser.checkLocator(locator, state, stepId, list, index, input.signal);
+          break;
+        }
           break;
       }
       const observation = observationFrom(result);
