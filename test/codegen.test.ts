@@ -48,6 +48,7 @@ test("codegen emits semantic locators and no kernel dependency", async () => {
   expect(source).toContain("getByRole(\"button\"");
   expect(source).toContain("getByText(\"Fixture cabinet\", { exact: true })");
   expect(source).not.toContain("qa-kernel");
+  expect(source).toContain("// Generated from case FIXTURE-001 and run run-001.");
   expect(source).toContain("process.env.QA_PASSWORD!");
 });
 test("codegen does not overwrite an existing spec without force", async () => {
@@ -82,4 +83,23 @@ test("matching incomplete readiness still blocks PASS codegen", async () => {
   await writeFile(resultsPath, JSON.stringify(results));
   const output = await codegenRun({ runDirectory: input.run, outputDirectory: input.out });
   expect(output.items).toEqual([{ caseId: "FIXTURE-001", status: "error", code: "CODEGEN_UNSUPPORTED_ORACLE" }]);
+});
+
+test("codegen rejects literals matching an available allowlisted secret", async () => {
+  const input = await syntheticRun();
+  const previous = process.env.QA_PASSWORD;
+  process.env.QA_PASSWORD = "runtime-secret";
+  try {
+    const recordingPath = join(input.run, "recording.ndjson");
+    const entries = (await readFile(recordingPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const check = entries[3];
+    if (!check || typeof check.text !== "string") throw new Error("synthetic check missing text");
+    check.text = "runtime-secret";
+    await writeFile(recordingPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    const output = await codegenRun({ runDirectory: input.run, outputDirectory: input.out });
+    expect(output.items).toEqual([{ caseId: "FIXTURE-001", status: "error", code: "CODEGEN_SECRET_LEAK" }]);
+  } finally {
+    if (previous === undefined) delete process.env.QA_PASSWORD;
+    else process.env.QA_PASSWORD = previous;
+  }
 });

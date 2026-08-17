@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { RecordingWriter, groundingMatches, oracleCovered, readRecording, validateRecordingEntry } from "../src/recording.js";
+import { RecordingWriter, groundingMatches, oracleAssertionCompatible, oracleCovered, readRecording, validateRecordingEntry } from "../src/recording.js";
 
 let temporaryDirectory = "";
 
@@ -26,6 +26,19 @@ test("recording validation rejects secret-like literals and grounding ignores as
   expect(groundingMatches("The page is visible", "visible")).toBe(false);
 });
 
+test("recording rejects protocol-relative and non-canonical open URLs", () => {
+  const base = { schemaVersion: 1, kind: "action", caseId: "CASE-001", stepId: "open", actionOrdinal: 1, action: "open", frame: "main", sourceSnapshotId: null, locator: null, from: null, value: null, key: null, deltaY: null, actionStatus: "ok", observationStatus: "complete" } as const;
+  expect(() => validateRecordingEntry({ ...base, url: "//evil.example/path" })).toThrow("relative path");
+  expect(() => validateRecordingEntry({ ...base, url: "/safe#fragment" })).toThrow("canonical");
+});
+
+
+test("oracle binding enforces assertion polarity", () => {
+  expect(oracleAssertionCompatible("expect", "visible")).toBe(true);
+  expect(oracleAssertionCompatible("expect", "hidden")).toBe(false);
+  expect(oracleAssertionCompatible("reject", "hidden")).toBe(true);
+  expect(oracleAssertionCompatible("reject", "equals")).toBe(false);
+});
 test("readRecording validates every persisted line", async () => {
   temporaryDirectory = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "qa-recording-"));
   const path = join(temporaryDirectory, "recording.ndjson");

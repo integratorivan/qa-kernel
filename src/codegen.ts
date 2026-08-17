@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseYaml, validateCase, validatePack, validateResult, type Pack, type TestCase, type CaseResult } from "./schema.js";
-import { readRecording, readinessMatchesPersisted, validateCaseResultForCodegen, validateRecordingForCase, type RecordedAction, type RecordedCheck, type RecordedLocator, type RecordingEntry, type CodegenReadiness, oracleCovered } from "./recording.js";
+import { readRecording, readinessMatchesPersisted, validateCaseResultForCodegen, validateRecordingForCase, containsSecretLike, type RecordedAction, type RecordedCheck, type RecordedLocator, type RecordingEntry, type CodegenReadiness, oracleCovered } from "./recording.js";
 
 export type CodegenErrorCode =
   | "CODEGEN_RUN_NOT_PASS"
@@ -116,6 +116,7 @@ export function generateSpec(input: ValidatedCodegenCase): string {
 }
 
 interface LoadedRun {
+  directory: string;
   pack: Pack;
   cases: { testCase: TestCase; source: string; file: string }[];
   results: CaseResult[];
@@ -159,14 +160,29 @@ async function loadRun(directory: string): Promise<LoadedRun> {
     else if (!recordingMissing) throw new CodegenCaseError("CODEGEN_RECORDING_INVALID", safeMessage(error));
   }
   if (recording.entries.some((entry) => !known.has(entry.caseId))) throw new CodegenCaseError("CODEGEN_RECORDING_INVALID", "recording references unknown case ID");
-  return { pack, cases, results, resultByCase: new Map(results.map((result) => [result.testCaseId, result])), entries: recording.entries, rawLines: recording.rawLines, recordingMissing, persistedReadiness };
+  return { directory, pack, cases, results, resultByCase: new Map(results.map((result) => [result.testCaseId, result])), entries: recording.entries, rawLines: recording.rawLines, recordingMissing, persistedReadiness };
 }
 function safeMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+function recordingLiterals(entry: RecordingEntry): string[] {
+  if (entry.kind === "action") {
+    const locator = entry.locator === null ? [] : entry.locator.kind === "role" ? [entry.locator.role, entry.locator.name] : [entry.locator.value];
+    return [entry.url, entry.value, entry.key, ...locator].filter((value): value is string => value !== null);
+  }
+  const locator = entry.check === "locator" ? entry.locator.kind === "role" ? [entry.locator.role, entry.locator.name] : [entry.locator.value] : [];
+  return [entry.check === "url" ? entry.path : entry.check === "text" ? entry.text : null, entry.groundingText, ...locator].filter((value): value is string => value !== null);
+}
+
+function recordingContainsAvailableSecret(entries: readonly RecordingEntry[], secretValues: readonly string[]): boolean {
+  return entries.some((entry) => recordingLiterals(entry).some((literal) => containsSecretLike(literal, secretValues)));
+}
 
 async function validateCaseForGeneration(run: LoadedRun, item: LoadedRun["cases"][number], result: CaseResult): Promise<ValidatedCodegenCase> {
   try { validateCaseResultForCodegen(result, item.testCase.id); } catch { throw new CodegenCaseError("CODEGEN_RUN_NOT_PASS", `case ${item.testCase.id} is not a PASS result`); }
   if (item.testCase.safety.mutation !== "none") throw new CodegenCaseError("CODEGEN_MUTATION_NOT_NONE", "only mutation:none cases are supported");
   const selected = run.entries.filter((entry) => entry.caseId === item.testCase.id);
+  const availableSecrets = run.pack.allowedSecretRefs.map((ref) => process.env[ref]).filter((value): value is string => Boolean(value));
+  if (recordingContainsAvailableSecret(selected, availableSecrets)) throw new CodegenCaseError("CODEGEN_SECRET_LEAK", "recording contains a prohibited secret value");
   try { validateRecordingForCase(selected, item.testCase, run.pack); } catch (error) {
     const message = safeMessage(error);
     if (/secret/i.test(message)) throw new CodegenCaseError("CODEGEN_SECRET_LEAK", "recording contains a prohibited secret value");
@@ -181,8 +197,7 @@ async function validateCaseForGeneration(run: LoadedRun, item: LoadedRun["cases"
   const rawLines = run.rawLines.filter((line) => line.includes(`"caseId":${JSON.stringify(item.testCase.id)}`));
   return { pack: run.pack, testCase: item.testCase, result, entries: selected, actions, checks, readiness, runId: basename(runDirectoryForHashes(run)), yamlHash: sha256(item.source), recordingHash: sha256(rawLines.join("")) };
 }
-
-function runDirectoryForHashes(run: LoadedRun): string { return (run as LoadedRun & { directory?: string }).directory ?? "run"; }
+function runDirectoryForHashes(run: LoadedRun): string { return run.directory; }
 
 async function atomicSpec(path: string, content: string, force: boolean): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });

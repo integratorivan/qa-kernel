@@ -111,6 +111,17 @@ function validateOracle(value: unknown, path: string): OracleRef {
   return { list: input.list, index: Number(input.index) };
 }
 
+function validateRelativePathUrl(value: string): void {
+  if (!value.startsWith("/") || value.startsWith("//")) throw new RecordingError("open requires a relative path URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(value, "https://qa-kernel.invalid");
+  } catch {
+    throw new RecordingError("open requires a valid relative path URL");
+  }
+  if (parsed.origin !== "https://qa-kernel.invalid" || parsed.hash !== "" || `${parsed.pathname}${parsed.search}` !== value) throw new RecordingError("open requires a canonical relative path URL");
+}
+
 function validateAction(value: Record<string, unknown>): RecordedAction {
   exactRecordKeys(value, ["schemaVersion", "kind", "caseId", "stepId", "actionOrdinal", "action", "frame", "sourceSnapshotId", "locator", "url", "from", "value", "key", "deltaY", "actionStatus", "observationStatus"], "recording action");
   if (value.schemaVersion !== 1 || value.kind !== "action") throw new RecordingError("recording action schemaVersion/kind is invalid");
@@ -144,7 +155,10 @@ function validateAction(value: Record<string, unknown>): RecordedAction {
   } else if (result.from !== null || result.value !== null) throw new RecordingError(`${result.action} must not contain from/value`);
   if (result.action === "press" && result.key === null) throw new RecordingError("press requires key");
   if (result.action !== "press" && result.key !== null) throw new RecordingError(`${result.action} must not contain key`);
-  if (result.action === "open" && (result.url === null || !result.url.startsWith("/"))) throw new RecordingError("open requires a relative path URL");
+  if (result.action === "open") {
+    if (result.url === null) throw new RecordingError("open requires a relative path URL");
+    validateRelativePathUrl(result.url);
+  }
   if (result.action !== "open" && result.url !== null) throw new RecordingError(`${result.action} must not contain url`);
   return result;
 }
@@ -245,13 +259,17 @@ export function groundingMatches(oracleLine: string, phrase: string): boolean {
   return normalizedOracle.includes(normalizedPhrase);
 }
 
+export function oracleAssertionCompatible(list: OracleRef["list"], state: "equals" | "notEquals" | "visible" | "hidden"): boolean {
+  return list === "expect" ? state === "equals" || state === "visible" : state === "notEquals" || state === "hidden";
+}
+
 export function oracleCovered(caseData: TestCase, checks: readonly RecordedCheck[]): CodegenReadiness {
   const uncovered: OracleRef[] = [];
   const unboundCheckOrdinals: number[] = [];
   for (const check of checks) {
     if (check.status !== "passed") unboundCheckOrdinals.push(check.checkOrdinal);
   }
-  const covered = (list: OracleRef["list"], index: number): boolean => checks.some((check) => check.status === "passed" && check.oracle.list === list && check.oracle.index === index && ((list === "expect" && (check.check === "url" ? check.state === "equals" : check.state === "visible")) || (list === "reject" && (check.check === "url" ? check.state === "notEquals" : check.state === "hidden"))));
+  const covered = (list: OracleRef["list"], index: number): boolean => checks.some((check) => check.status === "passed" && check.oracle.list === list && check.oracle.index === index && oracleAssertionCompatible(list, check.state));
   for (let index = 0; index < caseData.oracle.expect.length; index += 1) if (!covered("expect", index)) uncovered.push({ list: "expect", index });
   for (let index = 0; index < caseData.oracle.reject.length; index += 1) if (!covered("reject", index)) uncovered.push({ list: "reject", index });
   return { status: uncovered.length === 0 && unboundCheckOrdinals.length === 0 ? "ready" : "incomplete", uncovered, unboundCheckOrdinals };

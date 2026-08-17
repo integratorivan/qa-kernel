@@ -220,6 +220,85 @@ function requireText(value: string | undefined, field: string): string {
   return value;
 }
 
+const BROWSER_PARAMETER_FIELDS = ["action", "stepId", "ref", "url", "value", "from", "key", "deltaY", "path", "state", "oracleList", "oracleIndex", "text", "locatorKind", "locatorValue", "role", "name"] as const;
+
+export function validateBrowserParameters(parameters: Record<string, unknown>): void {
+  const action = parameters.action;
+  if (typeof action !== "string" || !MODEL_BROWSER_ACTIONS.includes(action as typeof MODEL_BROWSER_ACTIONS[number])) throw new Error("browser.action is invalid");
+  const allowedByAction: Record<string, readonly string[]> = {
+    open: ["action", "stepId", "url"],
+    snapshot: ["action", "stepId"],
+    screenshot: ["action", "stepId"],
+    click: ["action", "stepId", "ref"],
+    fill: ["action", "stepId", "ref", "from", "value"],
+    press: ["action", "stepId", "ref", "key"],
+    scroll: ["action", "stepId", "ref", "deltaY"],
+    checkUrl: ["action", "stepId", "oracleList", "oracleIndex", "path", "state"],
+    checkText: ["action", "stepId", "oracleList", "oracleIndex", "text", "state"],
+    checkLocator: ["action", "stepId", "oracleList", "oracleIndex", "locatorKind", "locatorValue", "role", "name", "state"],
+  };
+  const allowed = new Set(allowedByAction[action]);
+  const unknown = Object.keys(parameters).filter((key) => !allowed.has(key) || !BROWSER_PARAMETER_FIELDS.includes(key as typeof BROWSER_PARAMETER_FIELDS[number]));
+  if (unknown.length > 0) throw new Error(`browser.${action} contains unsupported field(s): ${unknown.join(", ")}`);
+  requireText(parameters.stepId as string | undefined, "stepId");
+  switch (action) {
+    case "open":
+      requireText(parameters.url as string | undefined, "url");
+      return;
+    case "snapshot":
+    case "screenshot":
+      return;
+    case "click":
+      requireText(parameters.ref as string | undefined, "ref");
+      return;
+    case "fill": {
+      requireText(parameters.ref as string | undefined, "ref");
+      const hasFrom = parameters.from !== undefined;
+      const hasValue = parameters.value !== undefined;
+      if (hasFrom === hasValue) throw new Error("browser.fill requires exactly one of from or value");
+      if (hasFrom) requireText(parameters.from as string | undefined, "from");
+      else requireText(parameters.value as string | undefined, "value");
+      return;
+    }
+    case "press":
+      requireText(parameters.ref as string | undefined, "ref");
+      requireText(parameters.key as string | undefined, "key");
+      return;
+    case "scroll":
+      if (parameters.deltaY !== undefined && (typeof parameters.deltaY !== "number" || !Number.isFinite(parameters.deltaY))) throw new Error("browser.scroll.deltaY must be finite");
+      return;
+    case "checkUrl":
+      if (parameters.oracleList !== "expect" && parameters.oracleList !== "reject") throw new Error("browser.oracleList must be expect or reject");
+      if (!Number.isInteger(parameters.oracleIndex) || Number(parameters.oracleIndex) < 0) throw new Error("browser.oracleIndex must be a non-negative integer");
+      requireText(parameters.path as string | undefined, "path");
+      if (parameters.state !== "equals" && parameters.state !== "notEquals") throw new Error("browser.checkUrl.state is invalid");
+      return;
+    case "checkText":
+      if (parameters.oracleList !== "expect" && parameters.oracleList !== "reject") throw new Error("browser.oracleList must be expect or reject");
+      if (!Number.isInteger(parameters.oracleIndex) || Number(parameters.oracleIndex) < 0) throw new Error("browser.oracleIndex must be a non-negative integer");
+      requireText(parameters.text as string | undefined, "text");
+      if (parameters.state !== "visible" && parameters.state !== "hidden") throw new Error("browser.checkText.state is invalid");
+      return;
+    case "checkLocator": {
+      if (parameters.oracleList !== "expect" && parameters.oracleList !== "reject") throw new Error("browser.oracleList must be expect or reject");
+      if (!Number.isInteger(parameters.oracleIndex) || Number(parameters.oracleIndex) < 0) throw new Error("browser.oracleIndex must be a non-negative integer");
+      if (parameters.state !== "visible" && parameters.state !== "hidden") throw new Error("browser.checkLocator.state is invalid");
+      const kind = parameters.locatorKind;
+      if (kind === "role") {
+        requireText(parameters.role as string | undefined, "role");
+        requireText(parameters.name as string | undefined, "name");
+        if (parameters.locatorValue !== undefined) throw new Error("browser.checkLocator role must not contain locatorValue");
+      } else if (kind === "testId" || kind === "label" || kind === "placeholder" || kind === "text") {
+        requireText(parameters.locatorValue as string | undefined, "locatorValue");
+        if (parameters.role !== undefined || parameters.name !== undefined) throw new Error("browser.checkLocator non-role locator must not contain role/name");
+      } else {
+        throw new Error("browser.checkLocator.locatorKind is invalid");
+      }
+      return;
+    }
+  }
+}
+
 export function containsApprovedSecret(value: string, secretValues: Iterable<string>): boolean {
   return [...secretValues].some((secret) => secret.length > 0 && value.includes(secret));
 }
@@ -274,6 +353,7 @@ function browserTool(input: PiCaseRuntimeInput, actionGuard: BrowserActionGuard,
     }),
     execute: async (_id, parameters) => {
       if (input.signal.aborted) throw input.signal.reason ?? new Error("case cancelled");
+      validateBrowserParameters(parameters as Record<string, unknown>);
       const stepId = requireText(parameters.stepId, "stepId");
       if (!input.steps.some((step) => step.id === stepId)) throw new Error(`browser.stepId ${stepId} is not part of the frozen case`);
       if (parameters.value && containsApprovedSecret(parameters.value, input.secretValues.values())) {

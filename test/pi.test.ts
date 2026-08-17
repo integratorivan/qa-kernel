@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { resolveModelConfiguration } from "../src/model.js";
-import { awaitPhaseSetup, BrowserActionGuard, containsApprovedSecret, extractJsonText, finalAssistantText, MODEL_BROWSER_ACTIONS, modelForConfiguration, promptWithFinalization, verifyPiIsolation } from "../src/pi.js";
+import { awaitPhaseSetup, BrowserActionGuard, containsApprovedSecret, extractJsonText, finalAssistantText, MODEL_BROWSER_ACTIONS, modelForConfiguration, promptWithFinalization, validateBrowserParameters, verifyPiIsolation } from "../src/pi.js";
 
 const observation = {
   snapshotId: "snapshot",
@@ -72,6 +72,13 @@ test("network changes reset no-progress and the last allowed action returns cont
 test("rejects an approved secret hidden inside an ordinary fill value", () => {
   expect(containsApprovedSecret("prefix-secret-sentinel-suffix", ["secret-sentinel"])).toBe(true);
   expect(containsApprovedSecret("public test data", ["secret-sentinel"])).toBe(false);
+});
+
+test("browser parameter parser rejects extra fields and ambiguous fills", () => {
+  expect(() => validateBrowserParameters({ action: "click", stepId: "step", ref: "r", value: "unexpected" })).toThrow("unsupported field");
+  expect(() => validateBrowserParameters({ action: "fill", stepId: "step", ref: "r", from: "QA_PASSWORD", value: "literal" })).toThrow("exactly one");
+  expect(() => validateBrowserParameters({ action: "checkText", stepId: "step", oracleList: "expect", oracleIndex: 0, text: "Cabinet", state: "visible", ref: "unexpected" })).toThrow("unsupported field");
+  expect(() => validateBrowserParameters({ action: "checkLocator", stepId: "step", oracleList: "expect", oracleIndex: 0, locatorKind: "role", role: "heading", name: "Cabinet", locatorValue: "unexpected", state: "visible" })).toThrow("role must not contain");
 });
 
 test("time limit also leaves a finalization turn without counting an action", () => {

@@ -1,6 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request } from "playwright";
 import { EvidenceStore, type Evidence } from "./artifacts.js";
-import { containsSecretLike, groundingMatches, type RecordedAction, type RecordedCheck, type RecordedLocator, type RecordingWriter } from "./recording.js";
+import { containsSecretLike, groundingMatches, oracleAssertionCompatible, type RecordedAction, type RecordedCheck, type RecordedLocator, type RecordingWriter } from "./recording.js";
 
 const TARGET_SELECTOR = 'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"], [role="checkbox"], [role="switch"], [tabindex]:not([tabindex="-1"])';
 const MAX_INTERACTIVE_TARGETS = 60;
@@ -104,6 +104,13 @@ interface SnapshotTarget {
 
 
 
+
+function safeCheckErrorCode(error: unknown): "CHECK_TIMEOUT" | "CHECK_MISMATCH" | "CHECK_FAILED" {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "CHECK_TIMEOUT") return "CHECK_TIMEOUT";
+  if (code === "CHECK_MISMATCH") return "CHECK_MISMATCH";
+  return "CHECK_FAILED";
+}
 function pathWithoutQuery(url: string): string {
   const parsed = new URL(url);
   return `${parsed.origin}${parsed.pathname}`;
@@ -456,7 +463,7 @@ export class CaseBrowser {
     const ordinal = ++this.#checkOrdinal;
     const groundingText = path;
     const oracle = this.options.oracle?.[oracleList]?.[oracleIndex];
-    let status: RecordedCheck["status"] = oracle && groundingMatches(oracle, path) ? "failed" : "unbound";
+    let status: RecordedCheck["status"] = oracle && oracleAssertionCompatible(oracleList, state) && groundingMatches(oracle, path) ? "failed" : "unbound";
     let pathname: string | undefined;
     let errorCode: string | undefined;
     if (status !== "unbound") {
@@ -468,8 +475,7 @@ export class CaseBrowser {
         }, signal);
         status = "passed";
       } catch (error) {
-        status = "failed";
-        errorCode = error instanceof Error ? error.message : "CHECK_FAILED";
+        errorCode = safeCheckErrorCode(error);
       }
     }
     await this.#recordCheck({ schemaVersion: 1, kind: "check", caseId: this.caseId, stepId, checkOrdinal: ordinal, oracle: { list: oracleList, index: oracleIndex }, check: "url", path, state, groundingText, status });
@@ -479,15 +485,14 @@ export class CaseBrowser {
   async checkText(text: string, state: "visible" | "hidden", stepId: string, oracleList: "expect" | "reject", oracleIndex: number, signal?: AbortSignal): Promise<CheckResult> {
     const ordinal = ++this.#checkOrdinal;
     const oracle = this.options.oracle?.[oracleList]?.[oracleIndex];
-    let status: RecordedCheck["status"] = oracle && groundingMatches(oracle, text) ? "failed" : "unbound";
+    let status: RecordedCheck["status"] = oracle && oracleAssertionCompatible(oracleList, state) && groundingMatches(oracle, text) ? "failed" : "unbound";
     let errorCode: string | undefined;
     if (status !== "unbound") {
       try {
         await this.#boundedCheck(() => this.#page.getByText(text, { exact: true }).waitFor({ state, timeout: 5_000 }), signal);
         status = "passed";
       } catch (error) {
-        status = "failed";
-        errorCode = error instanceof Error ? error.message : "CHECK_FAILED";
+        errorCode = safeCheckErrorCode(error);
       }
     }
     await this.#recordCheck({ schemaVersion: 1, kind: "check", caseId: this.caseId, stepId, checkOrdinal: ordinal, oracle: { list: oracleList, index: oracleIndex }, check: "text", text, exact: true, state, groundingText: text, status });
@@ -499,15 +504,14 @@ export class CaseBrowser {
     const actual = this.#locator(locator);
     const groundingText = await this.#groundingForLocator(locator, actual);
     const oracle = this.options.oracle?.[oracleList]?.[oracleIndex];
-    let status: RecordedCheck["status"] = oracle && groundingMatches(oracle, groundingText) ? "failed" : "unbound";
+    let status: RecordedCheck["status"] = oracle && oracleAssertionCompatible(oracleList, state) && groundingMatches(oracle, groundingText) ? "failed" : "unbound";
     let errorCode: string | undefined;
     if (status !== "unbound") {
       try {
         await this.#boundedCheck(() => actual.waitFor({ state, timeout: 5_000 }), signal);
         status = "passed";
       } catch (error) {
-        status = "failed";
-        errorCode = error instanceof Error ? error.message : "CHECK_FAILED";
+        errorCode = safeCheckErrorCode(error);
       }
     }
     await this.#recordCheck({ schemaVersion: 1, kind: "check", caseId: this.caseId, stepId, checkOrdinal: ordinal, oracle: { list: oracleList, index: oracleIndex }, check: "locator", locator, state, groundingText, status });
@@ -535,6 +539,12 @@ export class CaseBrowser {
 
   async #recordCheck(check: RecordedCheck): Promise<void> {
     if (!this.options.recording) return;
+    const literals = check.check === "url"
+      ? [check.path, check.groundingText]
+      : check.check === "text"
+        ? [check.text, check.groundingText]
+        : [check.groundingText, check.locator.kind === "role" ? check.locator.role : check.locator.value, check.locator.kind === "role" ? check.locator.name : ""];
+    if (literals.some((value) => containsSecretLike(value, this.options.secretValues ?? []))) return;
     await this.options.recording.append(check);
   }
 
@@ -826,21 +836,26 @@ export class CaseBrowser {
   async #stableLocator(target: SnapshotTarget): Promise<RecordedLocator | null> {
     const ephemeral = await target.locator.elementHandle().catch(() => null);
     if (!ephemeral) return null;
-    for (const candidate of target.locatorCandidates) {
-      const locator = this.#locator(candidate);
-      try {
-        if (await locator.count() !== 1) continue;
-        const handle = await locator.elementHandle();
-        if (!handle) continue;
-        const same = await locator.evaluate((element, other) => element === other, ephemeral);
-        await handle.dispose();
-        if (same) return candidate;
-      } catch {
-        continue;
+    try {
+      for (const candidate of target.locatorCandidates) {
+        const locator = this.#locator(candidate);
+        let handle: Awaited<ReturnType<Locator["elementHandle"]>> | null = null;
+        try {
+          if (await locator.count() !== 1) continue;
+          handle = await locator.elementHandle();
+          if (!handle) continue;
+          const same = await locator.evaluate((element, other) => element === other, ephemeral);
+          if (same) return candidate;
+        } catch {
+          continue;
+        } finally {
+          await handle?.dispose().catch(() => {});
+        }
       }
+      return null;
+    } finally {
+      await ephemeral.dispose().catch(() => {});
     }
-    await ephemeral.dispose();
-    return null;
   }
 
   #locator(locator: RecordedLocator): Locator {
